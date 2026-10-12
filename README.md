@@ -536,6 +536,14 @@ assert.Equal(t, "canonical-log-line", bag.Message())
 
 ---
 
+## Roadmap & Architecture: Ports & Adapters
+
+`canonical-logger` is actively evolving toward a pure **Ports & Adapters (Hexagonal)** architecture to fully decouple the core logging engine from third-party frameworks and cloud SDKs (`gin`, `oapi-codegen`, Google Cloud SDK).
+
+For the full list of planned decoupling tasks, framework adapters, and roadmap items, see [TODO.md](TODO.md).
+
+---
+
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
