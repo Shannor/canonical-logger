@@ -1,5 +1,5 @@
-// Package xlog tests for FieldBag
-package xlog
+// Package clog tests for FieldBag
+package clog
 
 import (
 	"bytes"

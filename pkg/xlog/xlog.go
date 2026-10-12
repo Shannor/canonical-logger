@@ -1,5 +1,7 @@
-// Package xlog provides canonical log line helpers and middlewares.
-// This package is an alias for the root package github.com/Shannor/canonical-logger.
+// Package xlog is a deprecated compatibility shim for github.com/Shannor/canonical-logger.
+// New code should import github.com/Shannor/canonical-logger or github.com/Shannor/canonical-logger/pkg/clog instead.
+//
+// Deprecated: use github.com/Shannor/canonical-logger instead.
 package xlog
 
 import (

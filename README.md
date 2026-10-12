@@ -1,4 +1,4 @@
-# canonical-logger (`xlog`)
+# canonical-logger (`clog`)
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/Shannor/canonical-logger.svg)](https://pkg.go.dev/github.com/Shannor/canonical-logger)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Shannor/canonical-logger)](https://goreportcard.com/report/github.com/Shannor/canonical-logger)
@@ -6,7 +6,7 @@
 
 Structured canonical logging for Go, built on [zerolog](https://github.com/rs/zerolog).
 
-`canonical-logger` implements the **Canonical Log Line** pattern (pioneered by Stripe): emitting exactly **one rich, structured log line** per HTTP request or background task lifecycle. Rather than scattering noisy, disjointed log lines across handlers, services, and database layers, contextual metadata is accumulated in a thread-safe `FieldBag` across the execution lifecycle and emitted as a single structured JSON event.
+`canonical-logger` (`clog`) implements the **Canonical Log Line** pattern (pioneered by Stripe): emitting exactly **one rich, structured log line** per HTTP request or background task lifecycle. Rather than scattering noisy, disjointed log lines across handlers, services, and database layers, contextual metadata is accumulated in a thread-safe `FieldBag` across the execution lifecycle and emitted as a single structured JSON event.
 
 For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for strict architectural rules, layer boundaries, and linting checklists.
 
@@ -15,14 +15,14 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 ## Highlights
 
 - **Single Structured Event**: One log entry per request with complete operational, business, and error context.
-- **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `xlog.WithGroupField(ctx, "db.getCampaign", "rows", 12)`).
+- **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getCampaign", "rows", 12)`).
 - **HTTP Middlewares**: First-class support for both [Gin](https://github.com/gin-gonic/gin) (`GinMiddleware`) and standard `net/http` (`HTTPMiddleware`, compatible with Chi, Gorilla, etc.).
 - **Trace Propagation**: Out-of-the-box W3C / Sentry trace ID extraction (`sentry-trace`, `baggage`) and fallback generation with response header injection.
 - **Boundary Error Tracking**: `SetResult` and `DeferResult` automatically record error details and format message tags (`<event>-success`, `<event>-failure`).
 - **Async & Background Support**:
-  - `xlog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, and parent fieldbag correlation.
-  - `xlog.Func`: Synchronous tasks with automatic latency and line emission.
-  - `xlog.CronFunc`: Wraps scheduled jobs for cron runners.
+  - `clog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, and parent fieldbag correlation.
+  - `clog.Func`: Synchronous tasks with automatic latency and line emission.
+  - `clog.CronFunc`: Wraps scheduled jobs for cron runners.
 - **Adaptive Level Sampling**: `LevelSampler` guarantees 100% capture of Warnings, Errors, and Panics while sampling high-volume Info/Debug traffic.
 - **Cloud Logging Ready**: Includes `GCPWriter` for Google Cloud Logging JSON payload forwarding and level mapping.
 
@@ -40,13 +40,13 @@ You can import either the root package:
 import "github.com/Shannor/canonical-logger"
 ```
 
-or the `pkg/xlog` subpackage:
+or the `pkg/clog` subpackage:
 
 ```go
-import "github.com/Shannor/canonical-logger/pkg/xlog"
+import "github.com/Shannor/canonical-logger/pkg/clog"
 ```
 
-Both export identical APIs under the `xlog` package identifier.
+Both export identical APIs under the `clog` package identifier. *(For backward compatibility with existing projects, `pkg/xlog` is also provided as an alias).*
 
 ---
 
@@ -60,7 +60,7 @@ Canonical logging relies on a clear separation of concerns across application la
 | **Boundary (API / Webhooks)** | `SetResult()`, `DeferResult()`, `WithGroupFields()` | `request` | Owns the canonical event name (`-success` / `-failure`), adds request input parameters & query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()` | `<serviceName>.<methodName>` | Records business execution details. **MUST NOT** set event names or touch the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). **MUST NOT** set event names or touch `"error"`. Returns standard Go errors. |
-| **Background / Cron** | `xlog.Go()`, `xlog.CronFunc()`, `xlog.Func()` | `job` / `request` | Spawns isolated execution contexts with independent FieldBags, correlates with parent snapshots, and recovers from panics. |
+| **Background / Cron** | `clog.Go()`, `clog.CronFunc()`, `clog.Func()` | `job` / `request` | Spawns isolated execution contexts with independent FieldBags, correlates with parent snapshots, and recovers from panics. |
 
 ---
 
@@ -78,9 +78,9 @@ Structured log engines (such as GCP Cloud Logging, Datadog, and Elasticsearch) q
 
 ### Field Naming Rules
 
-1. **camelCase Map Keys**: All keys in `xlog.Fields` MUST use **camelCase** (e.g. `"userId"`, `"campaignId"`, `"rowsReturned"`, `"durationMs"`).
+1. **camelCase Map Keys**: All keys in `clog.Fields` MUST use **camelCase** (e.g. `"userId"`, `"campaignId"`, `"rowsReturned"`, `"durationMs"`).
 2. **The `Id` Suffix**: Always use `Id` (not `ID`) in JSON string keys so search queries across entities are uniform (`"userId": userID`, `"campaignId": campaignID`). Go variable names remain standard Go idiom (`userID`, `campaignID`).
-3. **Always Use `xlog.Fields`**: Use the package type alias `xlog.Fields{...}` when constructing field maps. Never use bare `map[string]any` or `map[any]any`.
+3. **Always Use `clog.Fields`**: Use the package type alias `clog.Fields{...}` when constructing field maps. Never use bare `map[string]any` or `map[any]any`.
 4. **Zero PII Policy**: **Never log PII** (phone numbers, email addresses, full names, physical addresses). Always log entity identifiers (UUIDs, DB IDs).
 
 ---
@@ -136,13 +136,13 @@ Here is how context accumulates cleanly across the application layers without pa
 
 ### 1. HTTP Handler (Boundary Layer)
 
-The handler uses `defer xlog.DeferResult` to capture the final outcome and tags the `request` group with input parameters:
+The handler uses `defer clog.DeferResult` to capture the final outcome and tags the `request` group with input parameters:
 
 ```go
 func (api OrderAPI) Checkout(c *gin.Context) {
     ctx := c.Request.Context()
     var err error
-    defer xlog.DeferResult(ctx, "checkout-order", &err)
+    defer clog.DeferResult(ctx, "checkout-order", &err)
 
     var req CheckoutRequest
     if err = c.ShouldBindJSON(&req); err != nil {
@@ -151,7 +151,7 @@ func (api OrderAPI) Checkout(c *gin.Context) {
     }
 
     // Enrich request group
-    xlog.WithGroupFields(ctx, "request", xlog.Fields{
+    clog.WithGroupFields(ctx, "request", clog.Fields{
         "cartId":    req.CartID,
         "currency":  req.Currency,
         "itemCount": len(req.Items),
@@ -181,7 +181,7 @@ func (s orderService) Checkout(ctx context.Context, req CheckoutRequest) (*model
     }
 
     // Enrich service group
-    xlog.WithGroupFields(ctx, "orderService.checkout", xlog.Fields{
+    clog.WithGroupFields(ctx, "orderService.checkout", clog.Fields{
         "orderId":         order.ID,
         "totalCents":      order.TotalCents,
         "discountApplied": req.PromoCode != "",
@@ -199,15 +199,15 @@ The DAO method queries the database, records execution metrics in `<daoName>.<me
 func (d orderDAO) CreateOrder(ctx context.Context, req CheckoutRequest) (*models.Order, error) {
     start := time.Now()
     order := &models.Order{
-        ID:        uuid.NewString(),
-        CartID:    req.CartID,
+        ID:         uuid.NewString(),
+        CartID:     req.CartID,
         TotalCents: req.TotalCents,
     }
 
     err := d.db.WithContext(ctx).Create(order).Error
 
     // Enrich DAO group
-    xlog.WithGroupFields(ctx, "orderDAO.create", xlog.Fields{
+    clog.WithGroupFields(ctx, "orderDAO.create", clog.Fields{
         "table":      "orders",
         "rows":       1,
         "durationMs": time.Since(start).Milliseconds(),
@@ -232,14 +232,14 @@ Boundary layers call `SetResult` or `DeferResult` with the base event name:
 
 ### ⚠️ Warning: The Error Shadowing Gotcha
 
-When using `defer xlog.DeferResult(ctx, "my-operation", &err)`, the deferred call evaluates the pointer `&err` at function return. **If you shadow `err` inside an `if`, `for`, or `switch` block with `:=`, the outer `err` remains `nil`, causing the log to falsely report success!**
+When using `defer clog.DeferResult(ctx, "my-operation", &err)`, the deferred call evaluates the pointer `&err` at function return. **If you shadow `err` inside an `if`, `for`, or `switch` block with `:=`, the outer `err` remains `nil`, causing the log to falsely report success!**
 
 ```go
 // ❌ WRONG: := in a nested block shadows the outer 'err'
 func (api API) Handle(c *gin.Context) {
     ctx := c.Request.Context()
     var err error
-    defer xlog.DeferResult(ctx, "handle-action", &err)
+    defer clog.DeferResult(ctx, "handle-action", &err)
 
     if condition {
         // := creates a new local 'err' scoped only to this if block!
@@ -255,7 +255,7 @@ func (api API) Handle(c *gin.Context) {
 func (api API) Handle(c *gin.Context) {
     ctx := c.Request.Context()
     var err error
-    defer xlog.DeferResult(ctx, "handle-action", &err)
+    defer clog.DeferResult(ctx, "handle-action", &err)
 
     if condition {
         var data *Data
@@ -297,17 +297,17 @@ func main() {
 	r := gin.New()
 
 	// Register canonical logger and trace middleware
-	r.Use(xlog.GinMiddleware())
-	r.Use(xlog.TraceID())
+	r.Use(clog.GinMiddleware())
+	r.Use(clog.TraceID())
 
 	r.POST("/api/v1/campaigns", func(c *gin.Context) {
 		ctx := c.Request.Context()
 
 		var err error
-		defer xlog.DeferResult(ctx, "create-campaign", &err)
+		defer clog.DeferResult(ctx, "create-campaign", &err)
 
 		// Enrich request context
-		xlog.WithGroupFields(ctx, "request", xlog.Fields{
+		clog.WithGroupFields(ctx, "request", clog.Fields{
 			"name":   "Summer Launch",
 			"budget": 5000,
 		})
@@ -326,8 +326,8 @@ func main() {
 }
 
 func createCampaignService(ctx context.Context, name string) error {
-	xlog.WithGroupField(ctx, "campaignService.create", "campaignId", "cmp-456")
-	xlog.WithGroupFields(ctx, "db.insertCampaign", xlog.Fields{
+	clog.WithGroupField(ctx, "campaignService.create", "campaignId", "cmp-456")
+	clog.WithGroupFields(ctx, "db.insertCampaign", clog.Fields{
 		"table":      "campaigns",
 		"durationMs": 12,
 	})
@@ -351,13 +351,13 @@ func main() {
 
 	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		xlog.WithGroupField(ctx, "user", "id", r.PathValue("id"))
+		clog.WithGroupField(ctx, "user", "id", r.PathValue("id"))
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"status":"ok"}`))
 	})
 
-	// Wrap handler with xlog HTTPMiddleware and HTTPTraceMiddleware
-	handler := xlog.HTTPMiddleware(xlog.HTTPTraceMiddleware(mux))
+	// Wrap handler with clog HTTPMiddleware and HTTPTraceMiddleware
+	handler := clog.HTTPMiddleware(clog.HTTPTraceMiddleware(mux))
 	http.ListenAndServe(":8080", handler)
 }
 ```
@@ -366,38 +366,38 @@ func main() {
 
 ## Context API Reference
 
-All `xlog` context helpers are safe to call when no `FieldBag` is in context (they become safe no-ops).
+All `clog` context helpers are safe to call when no `FieldBag` is in context (they become safe no-ops).
 
 ### Adding Fields
 
 ```go
 // Add a flat root-level field
-xlog.WithField(ctx, "requestId", "req-123")
+clog.WithField(ctx, "requestId", "req-123")
 
 // Add multiple root-level fields
-xlog.WithFields(ctx, xlog.Fields{
+clog.WithFields(ctx, clog.Fields{
     "version": "1.0.0",
     "region":  "us-east-1",
 })
 
 // Add a single field to a nested group
-xlog.WithGroupField(ctx, "actor", "userId", "usr-abc")
+clog.WithGroupField(ctx, "actor", "userId", "usr-abc")
 
 // Add multiple fields to a group (supports dot-separated paths up to 3 levels deep)
-xlog.WithGroupFields(ctx, "db.getUser", xlog.Fields{
+clog.WithGroupFields(ctx, "db.getUser", clog.Fields{
     "queryDurationMs": 14,
     "rows":            1,
 })
 
 // Override the default canonical message ("canonical-log-line")
-xlog.WithMessage(ctx, "custom-event-message")
+clog.WithMessage(ctx, "custom-event-message")
 ```
 
 ---
 
 ## Background Tasks & Goroutines
 
-### `xlog.Go`: Detached Background Goroutine
+### `clog.Go`: Detached Background Goroutine
 
 Spawns a goroutine decoupled from the parent context's cancellation, with:
 - Its own fresh `FieldBag`.
@@ -405,36 +405,36 @@ Spawns a goroutine decoupled from the parent context's cancellation, with:
 - Panic recovery logging with automatic stack error capture and canonical flush.
 
 ```go
-xlog.Go(ctx, "send-welcome-email", func(bgCtx context.Context) {
+clog.Go(ctx, "send-welcome-email", func(bgCtx context.Context) {
     var err error
-    defer xlog.DeferResult(bgCtx, "send-welcome-email", &err)
+    defer clog.DeferResult(bgCtx, "send-welcome-email", &err)
 
     err = emailService.Send(bgCtx, userEmail)
 })
 ```
 
-### `xlog.Func`: Synchronous Task
+### `clog.Func`: Synchronous Task
 
 Runs a synchronous block with its own canonical logging context:
 
 ```go
-xlog.Func("startup-migrations", func(ctx context.Context) {
+clog.Func("startup-migrations", func(ctx context.Context) {
     var err error
-    defer xlog.DeferResult(ctx, "startup-migrations", &err)
+    defer clog.DeferResult(ctx, "startup-migrations", &err)
 
     err = runMigrations(ctx)
 })
 ```
 
-### `xlog.CronFunc`: Scheduled Job
+### `clog.CronFunc`: Scheduled Job
 
 Wraps a function for use with cron job schedulers (such as `robfig/cron`):
 
 ```go
 c := cron.New()
-c.AddFunc("@hourly", xlog.CronFunc("sync-subscribers", func(ctx context.Context) {
+c.AddFunc("@hourly", clog.CronFunc("sync-subscribers", func(ctx context.Context) {
     var err error
-    defer xlog.DeferResult(ctx, "sync-subscribers", &err)
+    defer clog.DeferResult(ctx, "sync-subscribers", &err)
 
     err = syncService.Sync(ctx)
 }))
@@ -447,7 +447,7 @@ c.AddFunc("@hourly", xlog.CronFunc("sync-subscribers", func(ctx context.Context)
 Use `LevelSampler` to sample high-frequency info/debug logs while always keeping 100% of warnings, errors, and panics:
 
 ```go
-sampler := xlog.LevelSampler{
+sampler := clog.LevelSampler{
     // Sample 10% of Info/Debug logs, but keep 100% of Warn/Error/Fatal/Panic
     SampleRate: 0.10,
 }
@@ -475,7 +475,7 @@ import (
 )
 
 // Map zerolog level names to GCP severities (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-xlog.ConfigureGCPLogLevels()
+clog.ConfigureGCPLogLevels()
 
 client, err := logging.NewClient(ctx, "my-gcp-project-id")
 if err != nil {
@@ -484,7 +484,7 @@ if err != nil {
 defer client.Close()
 
 gcpLogger := client.Logger("my-service-name")
-writer := &xlog.GCPWriter{Logger: gcpLogger}
+writer := &clog.GCPWriter{Logger: gcpLogger}
 
 log.Logger = zerolog.New(writer).With().Timestamp().Logger()
 zerolog.DefaultContextLogger = &log.Logger
@@ -497,8 +497,8 @@ zerolog.DefaultContextLogger = &log.Logger
 In Gin, sensitive route parameters (such as tokens or credentials in URLs) can be masked in the `path` field to prevent leaking secrets:
 
 ```go
-router.Use(xlog.GinMiddleware(
-    xlog.WithSensitiveParams("token", "optInID", "apiKey"),
+router.Use(clog.GinMiddleware(
+    clog.WithSensitiveParams("token", "optInID", "apiKey"),
 ))
 ```
 
@@ -511,10 +511,10 @@ When a matching parameter is present, `path` logs the router template (e.g. `/in
 Use the provided helpers in tests to inspect what fields were accumulated:
 
 ```go
-ctx := xlog.NewContext(context.Background())
-xlog.WithGroupField(ctx, "order", "id", "ord-123")
+ctx := clog.NewContext(context.Background())
+clog.WithGroupField(ctx, "order", "id", "ord-123")
 
-bag := xlog.BagFromContext(ctx)
+bag := clog.BagFromContext(ctx)
 assert.Equal(t, "canonical-log-line", bag.Message())
 ```
 

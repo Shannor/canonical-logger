@@ -1,4 +1,4 @@
-package xlog
+package clog
 
 import (
 	"context"
@@ -30,7 +30,7 @@ const defaultCanonicalMessage = "canonical-log-line"
 
 // ginFieldBagKey is the gin.Context key used to store the FieldBag so it survives
 // any middleware (e.g. auth middleware) that replaces c.Request with a fresh context.
-const ginFieldBagKey = "__xlog_fieldbag__"
+const ginFieldBagKey = "__clog_fieldbag__"
 
 // maxGroupDepth is the maximum nesting depth for dot-separated group paths.
 const maxGroupDepth = 3
@@ -241,7 +241,7 @@ func BagFromContext(ctx context.Context) *FieldBag {
 //
 // Example:
 //
-//	xlog.WithField(ctx, "campaignId", campaignID)
+//	clog.WithField(ctx, "campaignId", campaignID)
 func WithField(ctx context.Context, key string, value any) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -256,7 +256,7 @@ func WithField(ctx context.Context, key string, value any) context.Context {
 //
 // Example:
 //
-//	xlog.WithFields(ctx, xlog.Fields{"k1": v1, "k2": v2})
+//	clog.WithFields(ctx, clog.Fields{"k1": v1, "k2": v2})
 func WithFields(ctx context.Context, fields Fields) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -271,7 +271,7 @@ func WithFields(ctx context.Context, fields Fields) context.Context {
 //
 // Example:
 //
-//	xlog.WithGroupField(ctx, "request", "campaignId", campaignID)
+//	clog.WithGroupField(ctx, "request", "campaignId", campaignID)
 func WithGroupField(ctx context.Context, group, key string, value any) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -286,7 +286,7 @@ func WithGroupField(ctx context.Context, group, key string, value any) context.C
 //
 // Example:
 //
-//	xlog.WithGroupFields(ctx, "db.getCampaign", xlog.Fields{
+//	clog.WithGroupFields(ctx, "db.getCampaign", clog.Fields{
 //		"campaignId": campaignID,
 //		"durationMs": 150,
 //	})
@@ -304,7 +304,7 @@ func WithGroupFields(ctx context.Context, group string, fields Fields) context.C
 //
 // Example:
 //
-//	xlog.WithMessage(ctx, "notify-attendees")
+//	clog.WithMessage(ctx, "notify-attendees")
 func WithMessage(ctx context.Context, msg string) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {

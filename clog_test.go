@@ -1,4 +1,4 @@
-package xlog
+package clog
 
 import (
 	"testing"
@@ -32,6 +32,21 @@ func TestLevelSampler(t *testing.T) {
 }
 
 func TestConfigureGCPLogLevels(t *testing.T) {
+	origWarn := zerolog.LevelWarnValue
+	origError := zerolog.LevelErrorValue
+	origDebug := zerolog.LevelDebugValue
+	origInfo := zerolog.LevelInfoValue
+	origFatal := zerolog.LevelFatalValue
+	origPanic := zerolog.LevelPanicValue
+	t.Cleanup(func() {
+		zerolog.LevelWarnValue = origWarn
+		zerolog.LevelErrorValue = origError
+		zerolog.LevelDebugValue = origDebug
+		zerolog.LevelInfoValue = origInfo
+		zerolog.LevelFatalValue = origFatal
+		zerolog.LevelPanicValue = origPanic
+	})
+
 	ConfigureGCPLogLevels()
 
 	assert.Equal(t, "DEBUG", zerolog.LevelDebugValue)
