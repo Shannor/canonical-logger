@@ -4,13 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -37,14 +35,15 @@ func (w *syncWriter) Bytes() []byte {
 	return b
 }
 
-// captureBackground redirects the global zerolog logger to a thread-safe buffer
+// captureBackground redirects the default slog logger to a thread-safe buffer
 // for the duration of fn, then returns all JSON lines emitted.
 func captureBackground(t *testing.T, fn func()) []map[string]any {
 	t.Helper()
 	w := &syncWriter{}
-	orig := log.Logger
-	log.Logger = zerolog.New(io.Writer(w))
-	t.Cleanup(func() { log.Logger = orig })
+	orig := slog.Default()
+	h := NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug})
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(orig) })
 
 	fn()
 
@@ -374,7 +373,7 @@ func TestBackground_ErrorLogLevel(t *testing.T) {
 	})
 
 	require.Len(t, lines, 1)
-	assert.Equal(t, "error", lines[0]["level"])
+	assert.Equal(t, "ERROR", lines[0]["level"])
 }
 
 func TestBackground_WarningLevel(t *testing.T) {
@@ -385,7 +384,7 @@ func TestBackground_WarningLevel(t *testing.T) {
 	})
 
 	require.Len(t, lines, 1)
-	assert.Equal(t, "warn", lines[0]["level"])
+	assert.Equal(t, "WARN", lines[0]["level"])
 }
 
 func TestBackground_ErrorTakesPrecedenceOverWarning(t *testing.T) {
@@ -397,5 +396,5 @@ func TestBackground_ErrorTakesPrecedenceOverWarning(t *testing.T) {
 	})
 
 	require.Len(t, lines, 1)
-	assert.Equal(t, "error", lines[0]["level"])
+	assert.Equal(t, "ERROR", lines[0]["level"])
 }

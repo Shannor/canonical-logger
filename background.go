@@ -3,10 +3,9 @@ package clog
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
-
-	"github.com/rs/zerolog/log"
 )
 
 // NewBackground creates a fresh canonical log context for use outside of HTTP requests.
@@ -22,17 +21,21 @@ func NewBackground(name string) (context.Context, func()) {
 	flush := func() {
 		once.Do(func() {
 			latency := time.Since(start)
-			event := log.Logger.Info()
+			logger := LoggerFromContext(ctx)
+			level := slog.LevelInfo
 			if bag.hasGroup("error") {
-				event = log.Logger.Error()
+				level = slog.LevelError
 			} else if bag.hasWarning() {
-				event = log.Logger.Warn()
+				level = slog.LevelWarn
 			}
-			event = event.
-				Str("job", name).
-				Str("latency", latency.String())
-			bag.apply(event)
-			event.Msg(bag.Message())
+
+			attrs := []slog.Attr{
+				slog.String("job", name),
+				slog.String("latency", latency.String()),
+			}
+			attrs = append(attrs, bag.Attrs()...)
+
+			logger.LogAttrs(ctx, level, bag.Message(), attrs...)
 		})
 	}
 	return ctx, flush
@@ -75,15 +78,15 @@ func Go(parentCtx context.Context, name string, fn func(ctx context.Context)) {
 		defer flush()
 
 		// Recover from panics so the canonical log line is emitted and the
-		// error is visible in structured logs. Without this, a panic in a
-		// background goroutine silently kills the goroutine with no log
-		// output. Note: runtime fatal errors (e.g. stack overflow) cannot
-		// be recovered, but normal panics are the common case.
+		// error is visible in structured logs.
 		defer func() {
 			if r := recover(); r != nil {
 				err := fmt.Errorf("panic in background goroutine %q: %v", name, r)
 				SetResult(ctx, name, err)
-				log.Error().Err(err).Str("job", name).Msg("recovered panic in background goroutine")
+				LoggerFromContext(ctx).ErrorContext(ctx, "recovered panic in background goroutine",
+					slog.String("job", name),
+					slog.String("error", err.Error()),
+				)
 			}
 		}()
 

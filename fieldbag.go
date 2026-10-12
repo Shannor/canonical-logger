@@ -2,13 +2,13 @@ package clog
 
 import (
 	"context"
+	"log/slog"
 	"maps"
 	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
 	ginmiddleware "github.com/oapi-codegen/gin-middleware"
-	"github.com/rs/zerolog"
 )
 
 // Fields is a convenience alias for map[string]any.
@@ -25,6 +25,7 @@ type Groups = map[string]any
 type Root = map[string]any
 
 type fieldBagCtxKey struct{}
+type loggerCtxKey struct{}
 
 const defaultCanonicalMessage = "canonical-log-line"
 
@@ -68,7 +69,6 @@ func (b *FieldBag) ensurePath(path string) Groups {
 			if m, ok := existing.(Groups); ok {
 				current = m
 			} else {
-				// leaf value occupies this key — overwrite with map
 				next := make(Groups)
 				current[part] = next
 				current = next
@@ -95,20 +95,20 @@ func deepCopyMap(src Root) Root {
 	return out
 }
 
-// buildDict recursively constructs a zerolog Dict from a nested map.
-func buildDict(m Root) *zerolog.Event {
-	dict := zerolog.Dict()
+// buildGroupAttr recursively constructs a nested slog.Attr group from a map.
+func buildGroupAttr(key string, m Groups) slog.Attr {
+	attrs := make([]slog.Attr, 0, len(m))
 	for k, v := range m {
 		switch val := v.(type) {
 		case map[string]any:
-			dict.Dict(k, buildDict(val))
+			attrs = append(attrs, buildGroupAttr(k, val))
 		case error:
-			dict.Str(k, val.Error())
+			attrs = append(attrs, slog.String(k, val.Error()))
 		default:
-			dict.Interface(k, v)
+			attrs = append(attrs, slog.Any(k, v))
 		}
 	}
-	return dict
+	return slog.GroupAttrs(key, attrs...)
 }
 
 // Set stores a root-level field.
@@ -169,37 +169,55 @@ func (b *FieldBag) Message() string {
 	return b.message
 }
 
-// apply writes all accumulated root fields and group dicts onto the provided zerolog.Event.
-// It is safe to call on a nil *FieldBag (no-op).
-func (b *FieldBag) apply(event *zerolog.Event) {
-	if b == nil || event == nil {
-		return
+// Attrs returns all accumulated root fields and nested groups as slog.Attrs.
+// It is safe to call on a nil *FieldBag (returns nil).
+func (b *FieldBag) Attrs() []slog.Attr {
+	if b == nil {
+		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	attrs := make([]slog.Attr, 0, len(b.root)+len(b.groups))
 	for k, v := range b.root {
 		if err, ok := v.(error); ok {
-			event.Str(k, err.Error())
+			attrs = append(attrs, slog.String(k, err.Error()))
 		} else {
-			event.Interface(k, v)
+			attrs = append(attrs, slog.Any(k, v))
 		}
 	}
 
 	for groupName, groupValue := range b.groups {
 		if m, ok := groupValue.(Groups); ok {
-			event.Dict(groupName, buildDict(m))
+			attrs = append(attrs, buildGroupAttr(groupName, m))
 		} else if err, ok := groupValue.(error); ok {
-			event.Str(groupName, err.Error())
+			attrs = append(attrs, slog.String(groupName, err.Error()))
 		} else {
-			event.Interface(groupName, groupValue)
+			attrs = append(attrs, slog.Any(groupName, groupValue))
 		}
 	}
+
+	return attrs
 }
 
 // NewContext creates a new FieldBag, stores it in the context, and returns the updated context.
 func NewContext(ctx context.Context) context.Context {
 	return context.WithValue(ctx, fieldBagCtxKey{}, &FieldBag{})
+}
+
+// NewContextWithLogger returns a new context carrying the given *slog.Logger.
+func NewContextWithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	return context.WithValue(ctx, loggerCtxKey{}, logger)
+}
+
+// LoggerFromContext retrieves the *slog.Logger from the context, or returns slog.Default() if none is set.
+func LoggerFromContext(ctx context.Context) *slog.Logger {
+	if ctx != nil {
+		if l, ok := ctx.Value(loggerCtxKey{}).(*slog.Logger); ok && l != nil {
+			return l
+		}
+	}
+	return slog.Default()
 }
 
 // BagFromContext retrieves the FieldBag from the context. Returns nil if not present.
@@ -238,10 +256,6 @@ func BagFromContext(ctx context.Context) *FieldBag {
 
 // WithField adds a root-level field to the FieldBag in the context.
 // No-op if no FieldBag is present.
-//
-// Example:
-//
-//	clog.WithField(ctx, "campaignId", campaignID)
 func WithField(ctx context.Context, key string, value any) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -253,10 +267,6 @@ func WithField(ctx context.Context, key string, value any) context.Context {
 
 // WithFields adds multiple root-level fields to the FieldBag in the context.
 // No-op if no FieldBag is present.
-//
-// Example:
-//
-//	clog.WithFields(ctx, clog.Fields{"k1": v1, "k2": v2})
 func WithFields(ctx context.Context, fields Fields) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -268,10 +278,6 @@ func WithFields(ctx context.Context, fields Fields) context.Context {
 
 // WithGroupField adds a single field to a named group in the FieldBag in the context.
 // No-op if no FieldBag is present.
-//
-// Example:
-//
-//	clog.WithGroupField(ctx, "request", "campaignId", campaignID)
 func WithGroupField(ctx context.Context, group, key string, value any) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -283,13 +289,6 @@ func WithGroupField(ctx context.Context, group, key string, value any) context.C
 
 // WithGroupFields adds multiple fields to a named group in the FieldBag in the context.
 // No-op if no FieldBag is present.
-//
-// Example:
-//
-//	clog.WithGroupFields(ctx, "db.getCampaign", clog.Fields{
-//		"campaignId": campaignID,
-//		"durationMs": 150,
-//	})
 func WithGroupFields(ctx context.Context, group string, fields Fields) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -301,10 +300,6 @@ func WithGroupFields(ctx context.Context, group string, fields Fields) context.C
 
 // WithMessage overrides the canonical log line message string in the context's FieldBag.
 // No-op if no FieldBag is present.
-//
-// Example:
-//
-//	clog.WithMessage(ctx, "notify-attendees")
 func WithMessage(ctx context.Context, msg string) context.Context {
 	bag := BagFromContext(ctx)
 	if bag == nil {
@@ -387,7 +382,6 @@ func (b *FieldBag) hasGroup(name string) bool {
 		if m, ok := v.(Groups); ok {
 			current = m
 		} else {
-			// Hit a leaf value — the path is occupied.
 			return true
 		}
 	}
@@ -409,14 +403,12 @@ func (b *FieldBag) hasWarning() bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	// 1. Check root-level fields
 	if _, ok := b.root[warning]; ok {
 		return true
 	}
 	if _, ok := b.root[warnings]; ok {
 		return true
 	}
-	// 2. Recursively check groups for the key "warning"
 	return hasWarningInMap(b.groups)
 }
 

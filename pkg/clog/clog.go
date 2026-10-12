@@ -21,6 +21,9 @@ type FieldBag = root.FieldBag
 // LevelSampler is a sampler that samples based on log level.
 type LevelSampler = root.LevelSampler
 
+// SamplingHandler wraps an slog.Handler with level-based sampling.
+type SamplingHandler = root.SamplingHandler
+
 // GCPWriter implements io.Writer and sends logs to Google Cloud Logging.
 type GCPWriter = root.GCPWriter
 
@@ -29,13 +32,15 @@ type GinMiddlewareOption = root.GinMiddlewareOption
 
 var (
 	// Context management & field helpers
-	NewContext      = root.NewContext
-	BagFromContext  = root.BagFromContext
-	WithField       = root.WithField
-	WithFields      = root.WithFields
-	WithGroupField  = root.WithGroupField
-	WithGroupFields = root.WithGroupFields
-	WithMessage     = root.WithMessage
+	NewContext           = root.NewContext
+	NewContextWithLogger = root.NewContextWithLogger
+	LoggerFromContext    = root.LoggerFromContext
+	BagFromContext       = root.BagFromContext
+	WithField            = root.WithField
+	WithFields           = root.WithFields
+	WithGroupField       = root.WithGroupField
+	WithGroupFields      = root.WithGroupFields
+	WithMessage          = root.WithMessage
 
 	// Result tracking
 	SetResult   = root.SetResult
@@ -48,10 +53,14 @@ var (
 	Go            = root.Go
 
 	// Middlewares
-	GinMiddleware         = root.GinMiddleware
-	WithSensitiveParams   = root.WithSensitiveParams
-	HTTPMiddleware        = root.HTTPMiddleware
-	TraceID               = root.TraceID
-	HTTPTraceMiddleware   = root.HTTPTraceMiddleware
-	ConfigureGCPLogLevels = root.ConfigureGCPLogLevels
+	GinMiddleware       = root.GinMiddleware
+	WithSensitiveParams = root.WithSensitiveParams
+	HTTPMiddleware      = root.HTTPMiddleware
+	TraceID             = root.TraceID
+	HTTPTraceMiddleware = root.HTTPTraceMiddleware
+
+	// Handlers & Helpers
+	NewSamplingHandler = root.NewSamplingHandler
+	NewJSONHandler     = root.NewJSONHandler
+	GCPReplaceAttr     = root.GCPReplaceAttr
 )

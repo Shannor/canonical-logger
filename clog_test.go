@@ -1,26 +1,28 @@
 package clog
 
 import (
+	"bytes"
+	"encoding/json"
+	"log/slog"
 	"testing"
 
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestLevelSampler(t *testing.T) {
 	tests := []struct {
 		name       string
 		sampleRate float64
-		level      zerolog.Level
+		level      slog.Level
 		expected   bool
 	}{
-		{"Always allow Warn", 0.0, zerolog.WarnLevel, true},
-		{"Always allow Error", 0.0, zerolog.ErrorLevel, true},
-		{"Always allow Fatal", 0.0, zerolog.FatalLevel, true},
-		{"Always allow Panic", 0.0, zerolog.PanicLevel, true},
-		{"Sampling 100% Info", 1.0, zerolog.InfoLevel, true},
-		{"Sampling 0% Info", 0.0, zerolog.InfoLevel, false},
-		{"Sampling 0% Debug", 0.0, zerolog.DebugLevel, false},
+		{"Always allow Warn", 0.0, slog.LevelWarn, true},
+		{"Always allow Error", 0.0, slog.LevelError, true},
+		{"Always allow high Error", 0.0, slog.Level(12), true},
+		{"Sampling 100% Info", 1.0, slog.LevelInfo, true},
+		{"Sampling 0% Info", 0.0, slog.LevelInfo, false},
+		{"Sampling 0% Debug", 0.0, slog.LevelDebug, false},
 	}
 
 	for _, tt := range tests {
@@ -31,28 +33,43 @@ func TestLevelSampler(t *testing.T) {
 	}
 }
 
-func TestConfigureGCPLogLevels(t *testing.T) {
-	origWarn := zerolog.LevelWarnValue
-	origError := zerolog.LevelErrorValue
-	origDebug := zerolog.LevelDebugValue
-	origInfo := zerolog.LevelInfoValue
-	origFatal := zerolog.LevelFatalValue
-	origPanic := zerolog.LevelPanicValue
-	t.Cleanup(func() {
-		zerolog.LevelWarnValue = origWarn
-		zerolog.LevelErrorValue = origError
-		zerolog.LevelDebugValue = origDebug
-		zerolog.LevelInfoValue = origInfo
-		zerolog.LevelFatalValue = origFatal
-		zerolog.LevelPanicValue = origPanic
+func TestSamplingHandler(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, nil)
+	sampler := NewSamplingHandler(inner, 0.0) // Drop all Info
+
+	logger := slog.New(sampler)
+	logger.Info("should be dropped")
+	assert.Empty(t, buf.String())
+
+	logger.Warn("should be kept")
+	assert.Contains(t, buf.String(), "should be kept")
+}
+
+func TestNewJSONHandler_MessageKeyReplacement(t *testing.T) {
+	var buf bytes.Buffer
+	h := NewJSONHandler(&buf, nil)
+	logger := slog.New(h)
+
+	logger.Info("hello world")
+
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &m))
+	assert.Equal(t, "hello world", m["message"])
+	assert.NotContains(t, m, "msg")
+}
+
+func TestGCPReplaceAttr(t *testing.T) {
+	var buf bytes.Buffer
+	h := slog.NewJSONHandler(&buf, &slog.HandlerOptions{
+		ReplaceAttr: GCPReplaceAttr,
 	})
+	logger := slog.New(h)
 
-	ConfigureGCPLogLevels()
+	logger.Warn("gcp alert")
 
-	assert.Equal(t, "DEBUG", zerolog.LevelDebugValue)
-	assert.Equal(t, "INFO", zerolog.LevelInfoValue)
-	assert.Equal(t, "WARNING", zerolog.LevelWarnValue)
-	assert.Equal(t, "ERROR", zerolog.LevelErrorValue)
-	assert.Equal(t, "CRITICAL", zerolog.LevelFatalValue)
-	assert.Equal(t, "EMERGENCY", zerolog.LevelPanicValue)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(buf.Bytes(), &m))
+	assert.Equal(t, "WARNING", m["severity"])
+	assert.Equal(t, "gcp alert", m["message"])
 }

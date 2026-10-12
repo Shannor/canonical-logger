@@ -3,12 +3,12 @@ package clog
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,9 +19,9 @@ func setupMiddlewareRouter(buf *bytes.Buffer, handler gin.HandlerFunc, opts ...G
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	logger := zerolog.New(buf)
+	logger := slog.New(NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r.Use(func(c *gin.Context) {
-		c.Request = c.Request.WithContext(logger.WithContext(c.Request.Context()))
+		c.Request = c.Request.WithContext(NewContextWithLogger(c.Request.Context(), logger))
 		c.Next()
 	})
 
@@ -171,7 +171,7 @@ func TestMiddleware_WarningLevel_RootField(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	out := parseLogLine(t, &buf)
-	assert.Equal(t, "warn", out["level"])
+	assert.Equal(t, "WARN", out["level"])
 }
 
 func TestMiddleware_WarningLevel_GroupWarning(t *testing.T) {
@@ -188,7 +188,7 @@ func TestMiddleware_WarningLevel_GroupWarning(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	out := parseLogLine(t, &buf)
-	assert.Equal(t, "warn", out["level"])
+	assert.Equal(t, "WARN", out["level"])
 }
 
 func TestMiddleware_WarningLevel_NestedWarning(t *testing.T) {
@@ -205,7 +205,7 @@ func TestMiddleware_WarningLevel_NestedWarning(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	out := parseLogLine(t, &buf)
-	assert.Equal(t, "warn", out["level"])
+	assert.Equal(t, "WARN", out["level"])
 }
 
 func TestMiddleware_ErrorTakesPrecedenceOverWarning(t *testing.T) {
@@ -223,7 +223,7 @@ func TestMiddleware_ErrorTakesPrecedenceOverWarning(t *testing.T) {
 	r.ServeHTTP(w, req)
 
 	out := parseLogLine(t, &buf)
-	assert.Equal(t, "error", out["level"])
+	assert.Equal(t, "ERROR", out["level"])
 }
 
 func TestMiddleware_SensitiveParamMasking(t *testing.T) {
@@ -231,9 +231,9 @@ func TestMiddleware_SensitiveParamMasking(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	logger := zerolog.New(&buf)
+	logger := slog.New(NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	r.Use(func(c *gin.Context) {
-		c.Request = c.Request.WithContext(logger.WithContext(c.Request.Context()))
+		c.Request = c.Request.WithContext(NewContextWithLogger(c.Request.Context(), logger))
 		c.Next()
 	})
 	r.Use(GinMiddleware(WithSensitiveParams("customSecret")))
@@ -266,7 +266,7 @@ func TestMiddleware_SensitiveParamMasking(t *testing.T) {
 
 func TestHTTPMiddleware(t *testing.T) {
 	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
+	logger := slog.New(NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := WithField(r.Context(), "app_version", "v1.2.3")
@@ -277,7 +277,7 @@ func TestHTTPMiddleware(t *testing.T) {
 	})
 
 	mw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(logger.WithContext(r.Context()))
+		r = r.WithContext(NewContextWithLogger(r.Context(), logger))
 		HTTPMiddleware(handler).ServeHTTP(w, r)
 	})
 
@@ -304,14 +304,14 @@ func TestHTTPMiddleware(t *testing.T) {
 
 func TestHTTPMiddleware_ErrorStatus(t *testing.T) {
 	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
+	logger := slog.New(NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
 	mw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(logger.WithContext(r.Context()))
+		r = r.WithContext(NewContextWithLogger(r.Context(), logger))
 		HTTPMiddleware(handler).ServeHTTP(w, r)
 	})
 
@@ -320,19 +320,19 @@ func TestHTTPMiddleware_ErrorStatus(t *testing.T) {
 	mw.ServeHTTP(w, req)
 
 	out := parseLogLine(t, &buf)
-	assert.Equal(t, "error", out["level"])
+	assert.Equal(t, "ERROR", out["level"])
 }
 
 func TestHTTPMiddleware_WarningStatus(t *testing.T) {
 	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
+	logger := slog.New(NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
 
 	mw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(logger.WithContext(r.Context()))
+		r = r.WithContext(NewContextWithLogger(r.Context(), logger))
 		HTTPMiddleware(handler).ServeHTTP(w, r)
 	})
 
@@ -341,5 +341,5 @@ func TestHTTPMiddleware_WarningStatus(t *testing.T) {
 	mw.ServeHTTP(w, req)
 
 	out := parseLogLine(t, &buf)
-	assert.Equal(t, "warn", out["level"])
+	assert.Equal(t, "WARN", out["level"])
 }

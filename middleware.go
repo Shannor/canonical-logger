@@ -2,12 +2,12 @@ package clog
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog/log"
 )
 
 // GinMiddlewareOption allows configuring GinMiddleware behavior.
@@ -26,10 +26,10 @@ func WithSensitiveParams(params ...string) GinMiddlewareOption {
 	}
 }
 
-// GinMiddleware returns a gin.HandlerFunc that logs requests using xlog and Zerolog native context.
+// GinMiddleware returns a gin.HandlerFunc that logs requests using clog and log/slog.
 // It implements the canonical log line pattern by:
 // 1. Creating a FieldBag per request and storing it in the request context.
-// 2. After c.Next(), merging all accumulated fields (root + group dicts) into the canonical log event.
+// 2. After c.Next(), merging all accumulated fields (root + group attrs) into the canonical log event.
 func GinMiddleware(opts ...GinMiddlewareOption) gin.HandlerFunc {
 	cfg := &ginMiddlewareConfig{
 		sensitiveParams: []string{"token", "optInID"},
@@ -40,10 +40,7 @@ func GinMiddleware(opts ...GinMiddlewareOption) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 		start := time.Now()
-		// Inject both the request-scoped logger and a fresh FieldBag into the context.
-		// We also store the FieldBag on gin.Context so it survives any downstream
-		// middleware (e.g. auth middleware) that replaces c.Request with a fresh context.
-		ctx := log.Ctx(c.Request.Context()).With().Logger().WithContext(c.Request.Context())
+		ctx := c.Request.Context()
 		bag := &FieldBag{}
 		ctx = context.WithValue(ctx, fieldBagCtxKey{}, bag)
 		c.Set(ginFieldBagKey, bag)
@@ -56,8 +53,6 @@ func GinMiddleware(opts ...GinMiddlewareOption) gin.HandlerFunc {
 		stop := time.Since(start)
 
 		path := c.Request.URL.Path
-		// Capability routes with sensitive parameters must not
-		// log the raw secret; log the route template for those requests.
 		for _, param := range cfg.sensitiveParams {
 			if c.Param(param) != "" {
 				if fullPath := c.FullPath(); fullPath != "" {
@@ -67,31 +62,35 @@ func GinMiddleware(opts ...GinMiddlewareOption) gin.HandlerFunc {
 			}
 		}
 
-		// Retrieve the current logger from context (which might have been enriched by handlers)
-		// and finalize the canonical log event.
-		finalLogger := log.Ctx(c.Request.Context())
+		logger := LoggerFromContext(c.Request.Context())
 
-		event := finalLogger.Info()
+		level := slog.LevelInfo
+		var ginErrAttr slog.Attr
+		hasGinErr := false
 		if len(c.Errors) > 0 || bag.hasGroup("error") {
-			event = finalLogger.Error()
+			level = slog.LevelError
 			if len(c.Errors) > 0 {
-				event = event.Str("gin_error", c.Errors.String())
+				ginErrAttr = slog.String("gin_error", c.Errors.String())
+				hasGinErr = true
 			}
 		} else if bag.hasWarning() {
-			event = finalLogger.Warn()
+			level = slog.LevelWarn
 		}
 
-		event.
-			Int("status", c.Writer.Status()).
-			Str("method", c.Request.Method).
-			Str("path", path).
-			Str("ip", c.ClientIP()).
-			Str("latency", stop.String()).
-			Str("user-agent", c.Request.UserAgent())
+		attrs := []slog.Attr{
+			slog.Int("status", c.Writer.Status()),
+			slog.String("method", c.Request.Method),
+			slog.String("path", path),
+			slog.String("ip", c.ClientIP()),
+			slog.String("latency", stop.String()),
+			slog.String("user-agent", c.Request.UserAgent()),
+		}
+		if hasGinErr {
+			attrs = append(attrs, ginErrAttr)
+		}
+		attrs = append(attrs, bag.Attrs()...)
 
-		// Apply all accumulated FieldBag fields (root + group dicts) to the canonical event.
-		bag.apply(event)
-		event.Msg(bag.Message())
+		logger.LogAttrs(c.Request.Context(), level, bag.Message(), attrs...)
 	}
 }
 
@@ -122,7 +121,7 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 func HTTPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		ctx := log.Ctx(r.Context()).With().Logger().WithContext(r.Context())
+		ctx := r.Context()
 		bag := &FieldBag{}
 		ctx = context.WithValue(ctx, fieldBagCtxKey{}, bag)
 		r = r.WithContext(ctx)
@@ -131,13 +130,13 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 		next.ServeHTTP(rw, r)
 
 		stop := time.Since(start)
-		finalLogger := log.Ctx(r.Context())
+		logger := LoggerFromContext(r.Context())
 
-		event := finalLogger.Info()
+		level := slog.LevelInfo
 		if rw.statusCode >= 500 || bag.hasGroup("error") {
-			event = finalLogger.Error()
+			level = slog.LevelError
 		} else if rw.statusCode >= 400 || bag.hasWarning() {
-			event = finalLogger.Warn()
+			level = slog.LevelWarn
 		}
 
 		clientIP := r.RemoteAddr
@@ -153,15 +152,16 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			path += "?" + r.URL.RawQuery
 		}
 
-		event.
-			Int("status", rw.statusCode).
-			Str("method", r.Method).
-			Str("path", path).
-			Str("ip", clientIP).
-			Str("latency", stop.String()).
-			Str("user-agent", r.UserAgent())
+		attrs := []slog.Attr{
+			slog.Int("status", rw.statusCode),
+			slog.String("method", r.Method),
+			slog.String("path", path),
+			slog.String("ip", clientIP),
+			slog.String("latency", stop.String()),
+			slog.String("user-agent", r.UserAgent()),
+		}
+		attrs = append(attrs, bag.Attrs()...)
 
-		bag.apply(event)
-		event.Msg(bag.Message())
+		logger.LogAttrs(r.Context(), level, bag.Message(), attrs...)
 	})
 }

@@ -31,7 +31,7 @@ func (w *GCPWriter) Write(p []byte) (n int, err error) {
 		Payload: fields,
 	}
 
-	// Map zerolog severity/level string to logging.Severity
+	// Map severity/level string to logging.Severity
 	if sev, ok := fields["severity"].(string); ok {
 		entry.Severity = logging.ParseSeverity(sev)
 	} else if lvl, ok := fields["level"].(string); ok {

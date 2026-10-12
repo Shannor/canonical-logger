@@ -5,22 +5,25 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"sync"
 	"testing"
 
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// captureEvent runs apply on a FieldBag and returns the JSON output.
+// captureEvent logs the FieldBag's attributes using slog.NewJSONHandler and returns the unmarshaled JSON.
 func captureEvent(t *testing.T, bag *FieldBag) map[string]any {
 	t.Helper()
 	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
-	event := logger.Info()
-	bag.apply(event)
-	event.Send()
+	h := NewJSONHandler(&buf, nil)
+	logger := slog.New(h)
+	msg := "canonical-log-line"
+	if bag != nil {
+		msg = bag.Message()
+	}
+	logger.LogAttrs(context.Background(), slog.LevelInfo, msg, bag.Attrs()...)
 
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))
@@ -122,13 +125,11 @@ func TestFieldBag_ConcurrentWrites(t *testing.T) {
 	assert.Contains(t, out, "group")
 }
 
-func TestFieldBag_NilBag_Apply(t *testing.T) {
+func TestFieldBag_NilBag_Attrs(t *testing.T) {
 	var bag *FieldBag
 	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
-	event := logger.Info()
-	bag.apply(event)
-	event.Msg("ok")
+	logger := slog.New(NewJSONHandler(&buf, nil))
+	logger.LogAttrs(context.Background(), slog.LevelInfo, "ok", bag.Attrs()...)
 
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))

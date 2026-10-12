@@ -4,7 +4,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/Shannor/canonical-logger)](https://goreportcard.com/report/github.com/Shannor/canonical-logger)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Structured canonical logging for Go, built on [zerolog](https://github.com/rs/zerolog).
+Structured canonical logging for Go, built on Go's standard library **`log/slog`**.
 
 `canonical-logger` (`clog`) implements the **Canonical Log Line** pattern (pioneered by Stripe): emitting exactly **one rich, structured log line** per HTTP request or background task lifecycle. Rather than scattering noisy, disjointed log lines across handlers, services, and database layers, contextual metadata is accumulated in a thread-safe `FieldBag` across the execution lifecycle and emitted as a single structured JSON event.
 
@@ -14,6 +14,7 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 
 ## Highlights
 
+- **Standard Library First**: Built directly on `log/slog` (Go 1.21+) with **zero third-party logging dependencies**.
 - **Single Structured Event**: One log entry per request with complete operational, business, and error context.
 - **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getCampaign", "rows", 12)`).
 - **HTTP Middlewares**: First-class support for both [Gin](https://github.com/gin-gonic/gin) (`GinMiddleware`) and standard `net/http` (`HTTPMiddleware`, compatible with Chi, Gorilla, etc.).
@@ -23,8 +24,8 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
   - `clog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, and parent fieldbag correlation.
   - `clog.Func`: Synchronous tasks with automatic latency and line emission.
   - `clog.CronFunc`: Wraps scheduled jobs for cron runners.
-- **Adaptive Level Sampling**: `LevelSampler` guarantees 100% capture of Warnings, Errors, and Panics while sampling high-volume Info/Debug traffic.
-- **Cloud Logging Ready**: Includes `GCPWriter` for Google Cloud Logging JSON payload forwarding and level mapping.
+- **Adaptive Level Sampling**: `NewSamplingHandler` guarantees 100% capture of Warnings, Errors, and Panics while sampling high-volume Info/Debug traffic.
+- **Cloud Logging Ready**: Includes `GCPReplaceAttr` for automatic GCP severity mapping and `GCPWriter` for direct Google Cloud Logging SDK streaming.
 
 ---
 
@@ -91,7 +92,8 @@ Below is an actual canonical log line emitted after a request passes through mid
 
 ```json
 {
-  "level": "info",
+  "time": "2026-10-11T22:30:00.000000000-04:00",
+  "level": "INFO",
   "message": "checkout-order-success",
   "status": 200,
   "method": "POST",
@@ -279,20 +281,18 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
-	"time"
 
 	"github.com/Shannor/canonical-logger"
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 )
 
 func main() {
-	// Configure zerolog
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339})
-	zerolog.DefaultContextLogger = &log.Logger
+	// Configure slog JSON handler with standard "message" key
+	logger := slog.New(clog.NewJSONHandler(os.Stdout, nil))
+	slog.SetDefault(logger)
 
 	r := gin.New()
 
@@ -341,12 +341,16 @@ func createCampaignService(ctx context.Context, name string) error {
 package main
 
 import (
+	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/Shannor/canonical-logger"
 )
 
 func main() {
+	slog.SetDefault(slog.New(clog.NewJSONHandler(os.Stdout, nil)))
+
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
@@ -444,50 +448,62 @@ c.AddFunc("@hourly", clog.CronFunc("sync-subscribers", func(ctx context.Context)
 
 ## Level Sampling
 
-Use `LevelSampler` to sample high-frequency info/debug logs while always keeping 100% of warnings, errors, and panics:
+Use `NewSamplingHandler` to wrap any `slog.Handler` to sample high-frequency info/debug logs while always keeping 100% of warnings and errors:
 
 ```go
-sampler := clog.LevelSampler{
-    // Sample 10% of Info/Debug logs, but keep 100% of Warn/Error/Fatal/Panic
-    SampleRate: 0.10,
-}
+// Sample 10% of Info/Debug logs, but keep 100% of Warn/Error
+baseHandler := clog.NewJSONHandler(os.Stdout, nil)
+samplingHandler := clog.NewSamplingHandler(baseHandler, 0.10)
 
-log.Logger = zerolog.New(os.Stdout).
-    With().
-    Timestamp().
-    Caller().
-    Logger().
-    Sample(sampler)
+slog.SetDefault(slog.New(samplingHandler))
 ```
 
 ---
 
 ## Google Cloud Logging Integration
 
-To stream structured canonical logs into Google Cloud Logging:
+### Option A: Standard JSON to Stdout (Cloud Run, GKE, Compute Engine)
+
+GCP Cloud Logging automatically parses stdout JSON. Use `clog.GCPReplaceAttr` to map the level key to `"severity"` (with values `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`) and message to `"message"`:
 
 ```go
 import (
-    "cloud.google.com/go/logging"
+    "log/slog"
+    "os"
+
     "github.com/Shannor/canonical-logger"
-    "github.com/rs/zerolog"
-    "github.com/rs/zerolog/log"
 )
 
-// Map zerolog level names to GCP severities (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-clog.ConfigureGCPLogLevels()
+handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+    ReplaceAttr: clog.GCPReplaceAttr,
+})
+slog.SetDefault(slog.New(handler))
+```
+
+### Option B: Google Cloud Logging SDK (`GCPWriter`)
+
+If using the GCP Cloud Logging Go SDK directly:
+
+```go
+import (
+    "log/slog"
+    "cloud.google.com/go/logging"
+    "github.com/Shannor/canonical-logger"
+)
 
 client, err := logging.NewClient(ctx, "my-gcp-project-id")
 if err != nil {
-    log.Fatal().Err(err).Msg("failed to init GCP logging")
+    panic(err)
 }
 defer client.Close()
 
 gcpLogger := client.Logger("my-service-name")
 writer := &clog.GCPWriter{Logger: gcpLogger}
 
-log.Logger = zerolog.New(writer).With().Timestamp().Logger()
-zerolog.DefaultContextLogger = &log.Logger
+logger := slog.New(slog.NewJSONHandler(writer, &slog.HandlerOptions{
+    ReplaceAttr: clog.GCPReplaceAttr,
+}))
+slog.SetDefault(logger)
 ```
 
 ---

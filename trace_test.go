@@ -3,12 +3,12 @@ package clog
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
-	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,9 +19,9 @@ func setupTraceRouter(buf *bytes.Buffer, handler gin.HandlerFunc) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 
-	logger := zerolog.New(buf)
+	logger := slog.New(NewJSONHandler(buf, nil))
 	r.Use(func(c *gin.Context) {
-		c.Request = c.Request.WithContext(logger.WithContext(c.Request.Context()))
+		c.Request = c.Request.WithContext(NewContextWithLogger(c.Request.Context(), logger))
 		c.Next()
 	})
 
@@ -192,14 +192,14 @@ func TestTraceID_SpanIdExtracted(t *testing.T) {
 // TestHTTPTraceMiddleware_ExtractsFromSentryTraceHeader verifies standard net/http trace middleware.
 func TestHTTPTraceMiddleware_ExtractsFromSentryTraceHeader(t *testing.T) {
 	var buf bytes.Buffer
-	logger := zerolog.New(&buf)
+	logger := slog.New(NewJSONHandler(&buf, nil))
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	mw := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r = r.WithContext(logger.WithContext(r.Context()))
+		r = r.WithContext(NewContextWithLogger(r.Context(), logger))
 		HTTPMiddleware(HTTPTraceMiddleware(handler)).ServeHTTP(w, r)
 	})
 
