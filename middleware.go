@@ -41,7 +41,7 @@ func GinMiddleware(opts ...GinMiddlewareOption) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		start := time.Now()
 		ctx := c.Request.Context()
-		bag := &FieldBag{}
+		bag := &FieldBag{logger: rawLoggerFromContext(ctx)}
 		ctx = context.WithValue(ctx, fieldBagCtxKey{}, bag)
 		c.Set(ginFieldBagKey, bag)
 		c.Request = c.Request.WithContext(ctx)
@@ -122,7 +122,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		ctx := r.Context()
-		bag := &FieldBag{}
+		bag := &FieldBag{logger: rawLoggerFromContext(ctx)}
 		ctx = context.WithValue(ctx, fieldBagCtxKey{}, bag)
 		r = r.WithContext(ctx)
 

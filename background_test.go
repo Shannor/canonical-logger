@@ -398,3 +398,68 @@ func TestBackground_ErrorTakesPrecedenceOverWarning(t *testing.T) {
 	require.Len(t, lines, 1)
 	assert.Equal(t, "ERROR", lines[0]["level"])
 }
+
+func TestGo_InheritsParentContextLogger(t *testing.T) {
+	w := &syncWriter{}
+	customLogger := slog.New(NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}).WithAttrs([]slog.Attr{
+		slog.String("logger_scope", "custom-request"),
+	}))
+
+	parentCtx := NewContext(context.Background())
+	parentCtx = NewContextWithLogger(parentCtx, customLogger)
+	WithField(parentCtx, "requestId", "req-123")
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	Go(parentCtx, "inherited-logger-job", func(ctx context.Context) {
+		defer wg.Done()
+		WithField(ctx, "worker_step", "done")
+	})
+	wg.Wait()
+	goWait()
+
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(w.Bytes()), &line))
+	assert.Equal(t, "inherited-logger-job", line["job"])
+	assert.Equal(t, "custom-request", line["logger_scope"])
+	assert.Equal(t, "done", line["worker_step"])
+}
+
+func TestGo_PreservesParentContextValuesWithoutCancel(t *testing.T) {
+	type customCtxKey struct{}
+	parent, cancel := context.WithCancel(context.WithValue(context.Background(), customCtxKey{}, "tenant-42"))
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var gotVal any
+	var gotErr error
+
+	captureBackground(t, func() {
+		Go(parent, "ctx-val-job", func(ctx context.Context) {
+			cancel()
+			gotVal = ctx.Value(customCtxKey{})
+			gotErr = ctx.Err()
+			wg.Done()
+		})
+		wg.Wait()
+		goWait()
+	})
+
+	assert.Equal(t, "tenant-42", gotVal)
+	assert.NoError(t, gotErr)
+}
+
+func TestFunc_LoggerUpdatedInsideFn(t *testing.T) {
+	w := &syncWriter{}
+	customLogger := slog.New(NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	Func("custom-logger-func", func(ctx context.Context) {
+		NewContextWithLogger(ctx, customLogger)
+		WithField(ctx, "migrated", true)
+	})
+
+	var line map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(w.Bytes()), &line))
+	assert.Equal(t, "custom-logger-func", line["job"])
+	assert.Equal(t, true, line["migrated"])
+}

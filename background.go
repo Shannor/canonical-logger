@@ -13,8 +13,16 @@ import (
 // The flush func emits the canonical log line and is safe to call multiple times (only emits once).
 // Prefer CronFunc and Go over calling this directly.
 func NewBackground(name string) (context.Context, func()) {
+	return newBackground(context.Background(), name)
+}
+
+func newBackground(parentCtx context.Context, name string) (context.Context, func()) {
 	start := time.Now()
-	ctx := NewContext(context.Background())
+	baseCtx := context.Background()
+	if parentCtx != nil {
+		baseCtx = context.WithoutCancel(parentCtx)
+	}
+	ctx := NewContext(baseCtx)
 	bag := BagFromContext(ctx)
 
 	var once sync.Once
@@ -65,16 +73,21 @@ func CronFunc(name string, fn func(ctx context.Context)) func() {
 // Go spawns a goroutine with its own canonical logging session, detached from the
 // parent context. The goroutine:
 //   - Is NOT cancelled when the parent context is cancelled (context.WithoutCancel)
+//   - Inherits any custom *slog.Logger attached to the parent context
 //   - Has its own fresh FieldBag for an independent canonical log line
 //   - Copies the full parent FieldBag as a "parent" group for correlation
 //
 // The canonical log line is automatically flushed when fn returns.
 func Go(parentCtx context.Context, name string, fn func(ctx context.Context)) {
-	// Snapshot parent bag before detaching; nil if no bag in parent.
+	// Snapshot parent bag and logger before detaching; safe if parentCtx is nil.
 	parentSnap := BagFromContext(parentCtx).snapshot()
+	parentLogger := rawLoggerFromContext(parentCtx)
 
 	go func() {
-		ctx, flush := NewBackground(name)
+		ctx, flush := newBackground(parentCtx, name)
+		if parentLogger != nil {
+			ctx = NewContextWithLogger(ctx, parentLogger)
+		}
 		defer flush()
 
 		// Recover from panics so the canonical log line is emitted and the

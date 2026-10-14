@@ -46,6 +46,25 @@ type FieldBag struct {
 	root    Root
 	groups  Groups
 	message string
+	logger  *slog.Logger
+}
+
+func (b *FieldBag) setLogger(l *slog.Logger) {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.logger = l
+}
+
+func (b *FieldBag) getLogger() *slog.Logger {
+	if b == nil {
+		return nil
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.logger
 }
 
 // ensurePath navigates or creates nested maps for a dot-separated group path.
@@ -201,21 +220,47 @@ func (b *FieldBag) Attrs() []slog.Attr {
 }
 
 // NewContext creates a new FieldBag, stores it in the context, and returns the updated context.
+// If ctx already carries a custom *slog.Logger, the new FieldBag inherits it.
 func NewContext(ctx context.Context) context.Context {
-	return context.WithValue(ctx, fieldBagCtxKey{}, &FieldBag{})
+	return context.WithValue(ctx, fieldBagCtxKey{}, &FieldBag{
+		logger: rawLoggerFromContext(ctx),
+	})
 }
 
 // NewContextWithLogger returns a new context carrying the given *slog.Logger.
+// If a FieldBag is present in ctx, its logger is also updated so canonical flushes
+// use the updated logger even when callers do not reassign the outer request/task context.
 func NewContextWithLogger(ctx context.Context, logger *slog.Logger) context.Context {
+	if bag := BagFromContext(ctx); bag != nil {
+		bag.setLogger(logger)
+	}
 	return context.WithValue(ctx, loggerCtxKey{}, logger)
+}
+
+func rawLoggerFromContext(ctx context.Context) *slog.Logger {
+	if ctx == nil {
+		return nil
+	}
+	if l, ok := ctx.Value(loggerCtxKey{}).(*slog.Logger); ok && l != nil {
+		if bag := BagFromContext(ctx); bag != nil {
+			if bagLogger := bag.getLogger(); bagLogger != nil {
+				return bagLogger
+			}
+		}
+		return l
+	}
+	if bag := BagFromContext(ctx); bag != nil {
+		if l := bag.getLogger(); l != nil {
+			return l
+		}
+	}
+	return nil
 }
 
 // LoggerFromContext retrieves the *slog.Logger from the context, or returns slog.Default() if none is set.
 func LoggerFromContext(ctx context.Context) *slog.Logger {
-	if ctx != nil {
-		if l, ok := ctx.Value(loggerCtxKey{}).(*slog.Logger); ok && l != nil {
-			return l
-		}
+	if l := rawLoggerFromContext(ctx); l != nil {
+		return l
 	}
 	return slog.Default()
 }
