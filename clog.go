@@ -7,20 +7,28 @@ import (
 	"sync/atomic"
 )
 
+// SampleEvaluator determines whether a log record should be sampled based on
+// the request/task context and accumulated FieldBag.
+type SampleEvaluator func(ctx context.Context, bag *FieldBag) bool
+
 // LevelSampler determines whether a log record should be sampled based on log level and sample rate.
 // Warnings, Errors, and higher levels are always retained (100%).
-// Info, Debug, and lower levels are sampled at SampleRate (0.0 to 1.0).
+// Info, Debug, and lower levels are sampled at SampleRate (0.0 to 1.0) or via Evaluator if provided.
 type LevelSampler struct {
 	// SampleRate is the probability of a log being sampled (0.0 to 1.0).
 	// Applied only to Info and Debug levels.
 	SampleRate float64
-	counter    uint64
+	// Evaluator is an optional callback for contextual sampling decisions
+	// on Info and Debug levels. When non-nil, Evaluator is called before
+	// falling back to rate-based sampling.
+	Evaluator SampleEvaluator
+	counter   uint64
 }
 
 // Sample reports whether a record at lvl should be emitted.
 func (s *LevelSampler) Sample(lvl slog.Level) bool {
 	if lvl >= slog.LevelWarn {
-		return true // Always capture Warn and Error
+		return true
 	}
 	if s.SampleRate >= 1.0 {
 		return true
@@ -35,27 +43,51 @@ func (s *LevelSampler) Sample(lvl slog.Level) bool {
 	return (atomic.AddUint64(&s.counter, 1) % n) == 0
 }
 
+// SampleContext reports whether a record at lvl should be emitted, evaluating
+// the optional Evaluator with the context and its FieldBag before rate sampling.
+func (s *LevelSampler) SampleContext(ctx context.Context, lvl slog.Level) bool {
+	if lvl >= slog.LevelWarn {
+		return true
+	}
+	if s.Evaluator != nil {
+		return s.Evaluator(ctx, BagFromContext(ctx))
+	}
+	return s.Sample(lvl)
+}
+
 // SamplingHandler wraps an slog.Handler with level-based sampling.
 // Warn and Error levels are always emitted. Info and Debug levels are sampled based on sampleRate.
 type SamplingHandler struct {
 	handler slog.Handler
-	sampler LevelSampler
+	sampler *LevelSampler
 }
 
 // NewSamplingHandler creates a SamplingHandler wrapping the given slog.Handler.
 func NewSamplingHandler(h slog.Handler, sampleRate float64) *SamplingHandler {
 	return &SamplingHandler{
 		handler: h,
-		sampler: LevelSampler{SampleRate: sampleRate},
+		sampler: &LevelSampler{SampleRate: sampleRate},
 	}
 }
 
-// Enabled implements slog.Handler.Enabled, applying level sampling.
+// NewSamplingHandlerWithEvaluator creates a SamplingHandler with a custom contextual SampleEvaluator.
+func NewSamplingHandlerWithEvaluator(h slog.Handler, sampleRate float64, evaluator SampleEvaluator) *SamplingHandler {
+	return &SamplingHandler{
+		handler: h,
+		sampler: &LevelSampler{
+			SampleRate: sampleRate,
+			Evaluator:  evaluator,
+		},
+	}
+}
+
+// Enabled implements slog.Handler.Enabled, checking the underlying handler first
+// before applying level and contextual sampling.
 func (h *SamplingHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	if !h.sampler.Sample(level) {
+	if !h.handler.Enabled(ctx, level) {
 		return false
 	}
-	return h.handler.Enabled(ctx, level)
+	return h.sampler.SampleContext(ctx, level)
 }
 
 // Handle implements slog.Handler.Handle.
@@ -63,7 +95,7 @@ func (h *SamplingHandler) Handle(ctx context.Context, r slog.Record) error {
 	return h.handler.Handle(ctx, r)
 }
 
-// WithAttrs implements slog.Handler.WithAttrs.
+// WithAttrs implements slog.Handler.WithAttrs, sharing the underlying sampler state.
 func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	return &SamplingHandler{
 		handler: h.handler.WithAttrs(attrs),
@@ -71,7 +103,7 @@ func (h *SamplingHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	}
 }
 
-// WithGroup implements slog.Handler.WithGroup.
+// WithGroup implements slog.Handler.WithGroup, sharing the underlying sampler state.
 func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 	return &SamplingHandler{
 		handler: h.handler.WithGroup(name),

@@ -2,6 +2,7 @@ package clog
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"testing"
@@ -44,6 +45,73 @@ func TestSamplingHandler(t *testing.T) {
 
 	logger.Warn("should be kept")
 	assert.Contains(t, buf.String(), "should be kept")
+}
+
+func TestSamplingHandler_SharesCounterAcrossDerivedLoggers(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, nil)
+	// Sample 1 out of every 5 Info logs (20%)
+	sampler := NewSamplingHandler(inner, 0.2)
+	baseLogger := slog.New(sampler)
+
+	for i := 0; i < 10; i++ {
+		// Create a fresh derived logger per iteration via With and WithGroup
+		reqLogger := baseLogger.With(slog.Int("req", i)).WithGroup("meta")
+		reqLogger.Info("request completed")
+	}
+
+	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte("\n"))
+	require.Len(t, lines, 2, "expected exactly 2 of 10 logs to be emitted across derived loggers")
+}
+
+func TestSamplingHandler_DisabledInnerLevelDoesNotAdvanceCounter(t *testing.T) {
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})
+	// Sample 1 out of every 2 logs (50%)
+	sampler := NewSamplingHandler(inner, 0.5)
+	logger := slog.New(sampler)
+
+	// Debug logs are disabled by inner handler and must not advance the counter
+	logger.Debug("debug 1")
+	logger.Debug("debug 2")
+	logger.Debug("debug 3")
+
+	// First Info log sets counter=1 (dropped), second Info log sets counter=2 (emitted)
+	logger.Info("info 1")
+	assert.Empty(t, buf.String())
+
+	logger.Info("info 2")
+	assert.Contains(t, buf.String(), "info 2")
+}
+
+func TestSamplingHandlerWithEvaluator(t *testing.T) {
+	var buf bytes.Buffer
+	inner := NewJSONHandler(&buf, nil)
+	sampler := NewSamplingHandlerWithEvaluator(inner, 0.0, func(ctx context.Context, bag *FieldBag) bool {
+		if bag == nil {
+			return false
+		}
+		actor := bag.getGroup("actor")
+		return actor["tier"] == "premium"
+	})
+	logger := slog.New(sampler)
+
+	// Free tier should be dropped
+	freeCtx := NewContext(context.Background())
+	WithGroupField(freeCtx, "actor", "tier", "free")
+	logger.InfoContext(freeCtx, "free request")
+	assert.Empty(t, buf.String())
+
+	// Premium tier should be sampled
+	premiumCtx := NewContext(context.Background())
+	WithGroupField(premiumCtx, "actor", "tier", "premium")
+	logger.InfoContext(premiumCtx, "premium request")
+	assert.Contains(t, buf.String(), "premium request")
+
+	// Warn is always emitted regardless of evaluator
+	buf.Reset()
+	logger.WarnContext(freeCtx, "free warning")
+	assert.Contains(t, buf.String(), "free warning")
 }
 
 func TestNewJSONHandler_MessageKeyReplacement(t *testing.T) {

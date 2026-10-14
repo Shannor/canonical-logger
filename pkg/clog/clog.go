@@ -21,6 +21,9 @@ type FieldBag = root.FieldBag
 // LevelSampler is a sampler that samples based on log level.
 type LevelSampler = root.LevelSampler
 
+// SampleEvaluator determines whether a log record should be sampled based on context and FieldBag.
+type SampleEvaluator = root.SampleEvaluator
+
 // SamplingHandler wraps an slog.Handler with level-based sampling.
 type SamplingHandler = root.SamplingHandler
 
@@ -60,7 +63,8 @@ var (
 	HTTPTraceMiddleware = root.HTTPTraceMiddleware
 
 	// Handlers & Helpers
-	NewSamplingHandler = root.NewSamplingHandler
-	NewJSONHandler     = root.NewJSONHandler
-	GCPReplaceAttr     = root.GCPReplaceAttr
+	NewSamplingHandler              = root.NewSamplingHandler
+	NewSamplingHandlerWithEvaluator = root.NewSamplingHandlerWithEvaluator
+	NewJSONHandler                  = root.NewJSONHandler
+	GCPReplaceAttr                  = root.GCPReplaceAttr
 )
