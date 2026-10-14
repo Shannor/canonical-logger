@@ -169,3 +169,68 @@ func TestDeferResult_SameScope_AssignWithNewVariable_Propagates(t *testing.T) {
 	require.NotNil(t, errGroup)
 	assert.Equal(t, "same scope error", errGroup["err"])
 }
+
+type codedError struct {
+	msg      string
+	code     string
+	category string
+	fields   map[string]any
+	cause    error
+}
+
+func (e *codedError) Error() string                { return e.msg }
+func (e *codedError) Code() string                 { return e.code }
+func (e *codedError) Category() string             { return e.category }
+func (e *codedError) ErrorFields() map[string]any  { return e.fields }
+func (e *codedError) Unwrap() error                { return e.cause }
+
+func TestDefaultErrorFormatter_ExtractsMetadataAndCause(t *testing.T) {
+	rootErr := errors.New("connection refused")
+	richErr := &codedError{
+		msg:      "orderDAO.Insert: failed to connect",
+		code:     "DB_CONN_ERR",
+		category: "transient",
+		fields:   map[string]any{"retryable": true},
+		cause:    rootErr,
+	}
+
+	ctx := NewContext(context.Background())
+	SetResult(ctx, "create-order", richErr)
+
+	bag := BagFromContext(ctx)
+	errGroup := bag.getGroup("error")
+	require.NotNil(t, errGroup)
+	assert.Equal(t, "orderDAO.Insert: failed to connect", errGroup["err"])
+	assert.Equal(t, "DB_CONN_ERR", errGroup["code"])
+	assert.Equal(t, "transient", errGroup["category"])
+	assert.Equal(t, true, errGroup["retryable"])
+	assert.Equal(t, "connection refused", errGroup["cause"])
+}
+
+func TestSetErrorFormatter_CustomAndReset(t *testing.T) {
+	t.Cleanup(func() { SetErrorFormatter(nil) })
+
+	SetErrorFormatter(func(err error) Fields {
+		return Fields{
+			"err":    err.Error(),
+			"custom": "formatted",
+		}
+	})
+
+	ctx := NewContext(context.Background())
+	SetResult(ctx, "custom-op", errors.New("boom"))
+
+	bag := BagFromContext(ctx)
+	errGroup := bag.getGroup("error")
+	require.NotNil(t, errGroup)
+	assert.Equal(t, "boom", errGroup["err"])
+	assert.Equal(t, "formatted", errGroup["custom"])
+
+	// Reset to DefaultErrorFormatter
+	SetErrorFormatter(nil)
+	ctx2 := NewContext(context.Background())
+	SetResult(ctx2, "default-op", errors.New("plain"))
+	errGroup2 := BagFromContext(ctx2).getGroup("error")
+	assert.Equal(t, "plain", errGroup2["err"])
+	assert.NotContains(t, errGroup2, "custom")
+}

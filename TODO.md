@@ -197,7 +197,7 @@ EventX mutated the canonical message string by appending `-success` or `-failure
       - Suffixes message with `-success` / `-failure`.
     - **`StrategyOpenTelemetry`**:
       - Emits `status.code: "OK"` or `status.code: "ERROR"`.
-- [ ] **Pluggable Error Extractor / Formatter**:
+- [x] **Pluggable Error Extractor / Formatter**:
   - Currently `SetResult` only records `error: { "err": err.Error() }`.
   - Provide an `ErrorFormatter` hook to extract rich error metadata:
     ```go

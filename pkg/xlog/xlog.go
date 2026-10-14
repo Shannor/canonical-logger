@@ -35,6 +35,9 @@ type GCPWriter = root.GCPWriter
 // GinMiddlewareOption allows configuring GinMiddleware behavior.
 type GinMiddlewareOption = root.GinMiddlewareOption
 
+// ErrorFormatter extracts structured metadata fields from an error for the "error" group.
+type ErrorFormatter = root.ErrorFormatter
+
 const (
 	LevelTrace = root.LevelTrace
 	LevelDebug = root.LevelDebug
@@ -57,9 +60,11 @@ var (
 	WithGroupFields      = root.WithGroupFields
 	WithMessage          = root.WithMessage
 
-	// Result tracking
-	SetResult   = root.SetResult
-	DeferResult = root.DeferResult
+	// Result tracking & error formatting
+	SetResult             = root.SetResult
+	DeferResult           = root.DeferResult
+	SetErrorFormatter     = root.SetErrorFormatter
+	DefaultErrorFormatter = root.DefaultErrorFormatter
 
 	// Background and asynchronous tasks
 	NewBackground = root.NewBackground
