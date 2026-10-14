@@ -7,6 +7,16 @@ import (
 	"sync/atomic"
 )
 
+const (
+	LevelTrace = slog.Level(-8)
+	LevelDebug = slog.LevelDebug
+	LevelInfo  = slog.LevelInfo
+	LevelWarn  = slog.LevelWarn
+	LevelError = slog.LevelError
+	LevelFatal = slog.Level(12)
+	LevelPanic = slog.Level(16)
+)
+
 // SampleEvaluator determines whether a log record should be sampled based on
 // the request/task context and accumulated FieldBag.
 type SampleEvaluator func(ctx context.Context, bag *FieldBag) bool
@@ -112,8 +122,8 @@ func (h *SamplingHandler) WithGroup(name string) slog.Handler {
 }
 
 // NewJSONHandler creates an slog.JSONHandler with canonical logger standard options,
-// mapping the default slog message key ("msg") to "message" for consistency with
-// standard JSON logging in Cloud Logging, Datadog, and Kubernetes.
+// mapping the default slog message key ("msg") to "message" and rendering extended
+// levels (LevelTrace, LevelFatal, LevelPanic) as "TRACE", "FATAL", and "PANIC".
 func NewJSONHandler(w io.Writer, opts *slog.HandlerOptions) *slog.JSONHandler {
 	if opts == nil {
 		opts = &slog.HandlerOptions{}
@@ -121,8 +131,22 @@ func NewJSONHandler(w io.Writer, opts *slog.HandlerOptions) *slog.JSONHandler {
 	userReplace := opts.ReplaceAttr
 	optsCopy := *opts
 	optsCopy.ReplaceAttr = func(groups []string, a slog.Attr) slog.Attr {
-		if len(groups) == 0 && a.Key == slog.MessageKey {
-			a.Key = "message"
+		if len(groups) == 0 {
+			switch a.Key {
+			case slog.MessageKey:
+				a.Key = "message"
+			case slog.LevelKey:
+				if level, ok := a.Value.Any().(slog.Level); ok {
+					switch {
+					case level >= LevelPanic:
+						a.Value = slog.StringValue("PANIC")
+					case level >= LevelFatal:
+						a.Value = slog.StringValue("FATAL")
+					case level < LevelDebug:
+						a.Value = slog.StringValue("TRACE")
+					}
+				}
+			}
 		}
 		if userReplace != nil {
 			return userReplace(groups, a)

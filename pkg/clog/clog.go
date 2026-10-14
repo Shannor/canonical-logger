@@ -33,6 +33,16 @@ type GCPWriter = root.GCPWriter
 // GinMiddlewareOption allows configuring GinMiddleware behavior.
 type GinMiddlewareOption = root.GinMiddlewareOption
 
+const (
+	LevelTrace = root.LevelTrace
+	LevelDebug = root.LevelDebug
+	LevelInfo  = root.LevelInfo
+	LevelWarn  = root.LevelWarn
+	LevelError = root.LevelError
+	LevelFatal = root.LevelFatal
+	LevelPanic = root.LevelPanic
+)
+
 var (
 	// Context management & field helpers
 	NewContext           = root.NewContext

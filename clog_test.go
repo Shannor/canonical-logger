@@ -18,12 +18,14 @@ func TestLevelSampler(t *testing.T) {
 		level      slog.Level
 		expected   bool
 	}{
-		{"Always allow Warn", 0.0, slog.LevelWarn, true},
-		{"Always allow Error", 0.0, slog.LevelError, true},
-		{"Always allow high Error", 0.0, slog.Level(12), true},
-		{"Sampling 100% Info", 1.0, slog.LevelInfo, true},
-		{"Sampling 0% Info", 0.0, slog.LevelInfo, false},
-		{"Sampling 0% Debug", 0.0, slog.LevelDebug, false},
+		{"Always allow Warn", 0.0, LevelWarn, true},
+		{"Always allow Error", 0.0, LevelError, true},
+		{"Always allow Fatal", 0.0, LevelFatal, true},
+		{"Always allow Panic", 0.0, LevelPanic, true},
+		{"Sampling 100% Info", 1.0, LevelInfo, true},
+		{"Sampling 0% Info", 0.0, LevelInfo, false},
+		{"Sampling 0% Debug", 0.0, LevelDebug, false},
+		{"Sampling 0% Trace", 0.0, LevelTrace, false},
 	}
 
 	for _, tt := range tests {
@@ -125,6 +127,36 @@ func TestNewJSONHandler_MessageKeyReplacement(t *testing.T) {
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &m))
 	assert.Equal(t, "hello world", m["message"])
 	assert.NotContains(t, m, "msg")
+}
+
+func TestNewJSONHandler_ExtendedLevels(t *testing.T) {
+	tests := []struct {
+		level    slog.Level
+		expected string
+	}{
+		{LevelTrace, "TRACE"},
+		{LevelDebug, "DEBUG"},
+		{LevelInfo, "INFO"},
+		{LevelWarn, "WARN"},
+		{LevelError, "ERROR"},
+		{LevelFatal, "FATAL"},
+		{LevelPanic, "PANIC"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.expected, func(t *testing.T) {
+			var buf bytes.Buffer
+			h := NewJSONHandler(&buf, &slog.HandlerOptions{Level: LevelTrace})
+			logger := slog.New(h)
+
+			logger.Log(context.Background(), tt.level, "test level")
+
+			var m map[string]any
+			require.NoError(t, json.Unmarshal(buf.Bytes(), &m))
+			assert.Equal(t, tt.expected, m["level"])
+			assert.Equal(t, "test level", m["message"])
+		})
+	}
 }
 
 func TestGCPReplaceAttr(t *testing.T) {
