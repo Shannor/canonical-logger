@@ -6,6 +6,7 @@ import (
 	"maps"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	ginmiddleware "github.com/oapi-codegen/gin-middleware"
@@ -114,18 +115,57 @@ func deepCopyMap(src Root) Root {
 	return out
 }
 
+// toSlogAttr converts a key-value pair into a typed slog.Attr without reflection
+// for common types, nested maps, slog.Attr/Value/LogValuer, and errors.
+func toSlogAttr(key string, v any) slog.Attr {
+	switch val := v.(type) {
+	case string:
+		return slog.String(key, val)
+	case int:
+		return slog.Int(key, val)
+	case int64:
+		return slog.Int64(key, val)
+	case int32:
+		return slog.Int64(key, int64(val))
+	case uint:
+		return slog.Uint64(key, uint64(val))
+	case uint64:
+		return slog.Uint64(key, val)
+	case uint32:
+		return slog.Uint64(key, uint64(val))
+	case float64:
+		return slog.Float64(key, val)
+	case float32:
+		return slog.Float64(key, float64(val))
+	case bool:
+		return slog.Bool(key, val)
+	case time.Duration:
+		return slog.Duration(key, val)
+	case time.Time:
+		return slog.Time(key, val)
+	case map[string]any:
+		return buildGroupAttr(key, val)
+	case slog.Attr:
+		if val.Key == "" {
+			val.Key = key
+		}
+		return val
+	case slog.Value:
+		return slog.Attr{Key: key, Value: val}
+	case slog.LogValuer:
+		return slog.Attr{Key: key, Value: val.LogValue()}
+	case error:
+		return slog.String(key, val.Error())
+	default:
+		return slog.Any(key, v)
+	}
+}
+
 // buildGroupAttr recursively constructs a nested slog.Attr group from a map.
 func buildGroupAttr(key string, m Groups) slog.Attr {
 	attrs := make([]slog.Attr, 0, len(m))
 	for k, v := range m {
-		switch val := v.(type) {
-		case map[string]any:
-			attrs = append(attrs, buildGroupAttr(k, val))
-		case error:
-			attrs = append(attrs, slog.String(k, val.Error()))
-		default:
-			attrs = append(attrs, slog.Any(k, v))
-		}
+		attrs = append(attrs, toSlogAttr(k, v))
 	}
 	return slog.GroupAttrs(key, attrs...)
 }
@@ -199,21 +239,11 @@ func (b *FieldBag) Attrs() []slog.Attr {
 
 	attrs := make([]slog.Attr, 0, len(b.root)+len(b.groups))
 	for k, v := range b.root {
-		if err, ok := v.(error); ok {
-			attrs = append(attrs, slog.String(k, err.Error()))
-		} else {
-			attrs = append(attrs, slog.Any(k, v))
-		}
+		attrs = append(attrs, toSlogAttr(k, v))
 	}
 
 	for groupName, groupValue := range b.groups {
-		if m, ok := groupValue.(Groups); ok {
-			attrs = append(attrs, buildGroupAttr(groupName, m))
-		} else if err, ok := groupValue.(error); ok {
-			attrs = append(attrs, slog.String(groupName, err.Error()))
-		} else {
-			attrs = append(attrs, slog.Any(groupName, groupValue))
-		}
+		attrs = append(attrs, toSlogAttr(groupName, groupValue))
 	}
 
 	return attrs
@@ -321,6 +351,26 @@ func WithFields(ctx context.Context, fields Fields) context.Context {
 	return ctx
 }
 
+// WithAttrs adds strongly-typed slog.Attr values as root-level fields to the FieldBag in the context.
+// No-op if no FieldBag is present.
+func WithAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
+	bag := BagFromContext(ctx)
+	if bag == nil || len(attrs) == 0 {
+		return ctx
+	}
+	bag.mu.Lock()
+	defer bag.mu.Unlock()
+	if bag.root == nil {
+		bag.root = make(Root, len(attrs))
+	}
+	for _, a := range attrs {
+		if a.Key != "" {
+			bag.root[a.Key] = a
+		}
+	}
+	return ctx
+}
+
 // WithGroupField adds a single field to a named group in the FieldBag in the context.
 // No-op if no FieldBag is present.
 func WithGroupField(ctx context.Context, group, key string, value any) context.Context {
@@ -340,6 +390,24 @@ func WithGroupFields(ctx context.Context, group string, fields Fields) context.C
 		return ctx
 	}
 	bag.setGroupMany(group, fields)
+	return ctx
+}
+
+// WithGroupAttrs adds strongly-typed slog.Attr values to a named group in the FieldBag in the context.
+// No-op if no FieldBag is present.
+func WithGroupAttrs(ctx context.Context, group string, attrs ...slog.Attr) context.Context {
+	bag := BagFromContext(ctx)
+	if bag == nil || len(attrs) == 0 {
+		return ctx
+	}
+	bag.mu.Lock()
+	defer bag.mu.Unlock()
+	target := bag.ensurePath(group)
+	for _, a := range attrs {
+		if a.Key != "" {
+			target[a.Key] = a
+		}
+	}
 	return ctx
 }
 

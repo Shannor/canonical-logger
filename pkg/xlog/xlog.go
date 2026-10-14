@@ -62,8 +62,10 @@ var (
 	BagFromContext       = root.BagFromContext
 	WithField            = root.WithField
 	WithFields           = root.WithFields
+	WithAttrs            = root.WithAttrs
 	WithGroupField       = root.WithGroupField
 	WithGroupFields      = root.WithGroupFields
+	WithGroupAttrs       = root.WithGroupAttrs
 	WithMessage          = root.WithMessage
 
 	// Result tracking & error formatting

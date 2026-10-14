@@ -484,3 +484,34 @@ func TestFieldBag_HasWarning(t *testing.T) {
 	bag4.setGroup("warning", "detail", "something")
 	assert.True(t, bag4.hasWarning())
 }
+
+type sampleLogValuer struct {
+	id string
+}
+
+func (s sampleLogValuer) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("entityId", s.id), slog.Bool("redacted", true))
+}
+
+func TestFieldBag_WithAttrsAndLogValuer(t *testing.T) {
+	ctx := NewContext(context.Background())
+	WithAttrs(ctx, slog.String("region", "us-east-1"), slog.Int("attempt", 2))
+	WithGroupAttrs(ctx, "orderService.create", slog.String("orderId", "ord_99"), slog.Int64("durationMs", 15))
+	WithField(ctx, "valuer", sampleLogValuer{id: "ent_1"})
+
+	out := captureEvent(t, BagFromContext(ctx))
+	assert.Equal(t, "us-east-1", out["region"])
+	assert.Equal(t, float64(2), out["attempt"])
+
+	svcGroup, ok := out["orderService"].(map[string]any)
+	require.True(t, ok)
+	createGroup, ok := svcGroup["create"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "ord_99", createGroup["orderId"])
+	assert.Equal(t, float64(15), createGroup["durationMs"])
+
+	valuerGroup, ok := out["valuer"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "ent_1", valuerGroup["entityId"])
+	assert.Equal(t, true, valuerGroup["redacted"])
+}
