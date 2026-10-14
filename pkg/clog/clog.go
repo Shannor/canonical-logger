@@ -27,6 +27,12 @@ type SampleEvaluator = root.SampleEvaluator
 // SamplingHandler wraps an slog.Handler with level-based sampling.
 type SamplingHandler = root.SamplingHandler
 
+// ConsoleHandler is a human-readable, optionally colorized slog.Handler for local development.
+type ConsoleHandler = root.ConsoleHandler
+
+// ConsoleHandlerOptions configures ConsoleHandler behavior.
+type ConsoleHandlerOptions = root.ConsoleHandlerOptions
+
 // GCPWriter implements io.Writer and sends logs to Google Cloud Logging.
 type GCPWriter = root.GCPWriter
 
@@ -81,5 +87,6 @@ var (
 	NewSamplingHandler              = root.NewSamplingHandler
 	NewSamplingHandlerWithEvaluator = root.NewSamplingHandlerWithEvaluator
 	NewJSONHandler                  = root.NewJSONHandler
+	NewConsoleHandler               = root.NewConsoleHandler
 	GCPReplaceAttr                  = root.GCPReplaceAttr
 )
