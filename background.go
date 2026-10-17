@@ -37,11 +37,11 @@ func newBackground(parentCtx context.Context, name string) (context.Context, fun
 				level = slog.LevelWarn
 			}
 
-			attrs := []slog.Attr{
+			baseAttrs := [2]slog.Attr{
 				slog.String("job", name),
 				slog.String("latency", latency.String()),
 			}
-			attrs = append(attrs, bag.Attrs()...)
+			attrs := bag.appendAttrs(baseAttrs[:])
 
 			logger.LogAttrs(ctx, level, bag.Message(), attrs...)
 		})

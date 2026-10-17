@@ -65,6 +65,12 @@ func NewConsoleHandler(w io.Writer, opts *ConsoleHandlerOptions) *ConsoleHandler
 	}
 }
 
+var consoleBufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 512))
+	},
+}
+
 // Enabled implements slog.Handler.Enabled.
 func (h *ConsoleHandler) Enabled(_ context.Context, level slog.Level) bool {
 	minLevel := slog.LevelInfo
@@ -76,44 +82,60 @@ func (h *ConsoleHandler) Enabled(_ context.Context, level slog.Level) bool {
 
 // Handle implements slog.Handler.Handle.
 func (h *ConsoleHandler) Handle(_ context.Context, r slog.Record) error {
-	var buf bytes.Buffer
+	buf := consoleBufPool.Get().(*bytes.Buffer)
+	buf.Reset()
 
 	if !r.Time.IsZero() {
-		ts := r.Time.Format(h.opts.TimeFormat)
-		h.writeColored(&buf, ansiDim, ts)
+		var timeBuf [64]byte
+		ts := r.Time.AppendFormat(timeBuf[:0], h.opts.TimeFormat)
+		if h.opts.NoColor {
+			buf.Write(ts)
+		} else {
+			buf.WriteString(ansiDim)
+			buf.Write(ts)
+			buf.WriteString(ansiReset)
+		}
 		buf.WriteByte(' ')
 	}
 
 	lvlLabel, lvlColor := formatConsoleLevel(r.Level)
-	h.writeColored(&buf, lvlColor, lvlLabel)
+	h.writeColored(buf, lvlColor, lvlLabel)
 	buf.WriteByte(' ')
 
-	h.writeColored(&buf, ansiBold, r.Message)
+	h.writeColored(buf, ansiBold, r.Message)
 
-	allAttrs := make([]slog.Attr, 0, len(h.preformatted)+r.NumAttrs())
-	allAttrs = append(allAttrs, h.preformatted...)
+	for _, a := range h.preformatted {
+		h.formatAttr(buf, "", a)
+	}
 
-	var recordAttrs []slog.Attr
-	r.Attrs(func(a slog.Attr) bool {
-		recordAttrs = append(recordAttrs, a)
-		return true
-	})
-	if len(recordAttrs) > 0 {
+	if len(h.groups) == 0 {
+		r.Attrs(func(a slog.Attr) bool {
+			h.formatAttr(buf, "", a)
+			return true
+		})
+	} else if r.NumAttrs() > 0 {
+		recordAttrs := make([]slog.Attr, 0, r.NumAttrs())
+		r.Attrs(func(a slog.Attr) bool {
+			recordAttrs = append(recordAttrs, a)
+			return true
+		})
 		for i := len(h.groups) - 1; i >= 0; i-- {
 			recordAttrs = []slog.Attr{slog.GroupAttrs(h.groups[i], recordAttrs...)}
 		}
-		allAttrs = append(allAttrs, recordAttrs...)
-	}
-
-	for _, a := range allAttrs {
-		h.formatAttr(&buf, "", a)
+		for _, a := range recordAttrs {
+			h.formatAttr(buf, "", a)
+		}
 	}
 
 	buf.WriteByte('\n')
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	_, err := h.w.Write(buf.Bytes())
+	h.mu.Unlock()
+
+	if buf.Cap() <= 16384 {
+		consoleBufPool.Put(buf)
+	}
 	return err
 }
 
@@ -233,40 +255,45 @@ func (h *ConsoleHandler) formatGroupMember(buf *bytes.Buffer, isErrGroup bool, a
 }
 
 func (h *ConsoleHandler) writeValue(buf *bytes.Buffer, isError bool, v slog.Value) {
-	str := formatSlogValue(v)
-	if isError {
-		h.writeColored(buf, ansiRed, str)
-		return
+	colored := isError && !h.opts.NoColor
+	if colored {
+		buf.WriteString(ansiRed)
 	}
-	buf.WriteString(str)
+	writeSlogValue(buf, v)
+	if colored {
+		buf.WriteString(ansiReset)
+	}
 }
 
-func formatSlogValue(v slog.Value) string {
+func writeSlogValue(buf *bytes.Buffer, v slog.Value) {
+	var scratch [64]byte
 	switch v.Kind() {
 	case slog.KindString:
 		s := v.String()
 		if needsQuoting(s) {
-			return strconv.Quote(s)
+			buf.Write(strconv.AppendQuote(scratch[:0], s))
+		} else {
+			buf.WriteString(s)
 		}
-		return s
 	case slog.KindInt64:
-		return strconv.FormatInt(v.Int64(), 10)
+		buf.Write(strconv.AppendInt(scratch[:0], v.Int64(), 10))
 	case slog.KindUint64:
-		return strconv.FormatUint(v.Uint64(), 10)
+		buf.Write(strconv.AppendUint(scratch[:0], v.Uint64(), 10))
 	case slog.KindFloat64:
-		return strconv.FormatFloat(v.Float64(), 'f', -1, 64)
+		buf.Write(strconv.AppendFloat(scratch[:0], v.Float64(), 'f', -1, 64))
 	case slog.KindBool:
-		return strconv.FormatBool(v.Bool())
+		buf.Write(strconv.AppendBool(scratch[:0], v.Bool()))
 	case slog.KindDuration:
-		return v.Duration().String()
+		buf.WriteString(v.Duration().String())
 	case slog.KindTime:
-		return v.Time().Format(time.RFC3339)
+		buf.Write(v.Time().AppendFormat(scratch[:0], time.RFC3339))
 	default:
 		s := fmt.Sprint(v.Any())
 		if needsQuoting(s) {
-			return strconv.Quote(s)
+			buf.Write(strconv.AppendQuote(scratch[:0], s))
+		} else {
+			buf.WriteString(s)
 		}
-		return s
 	}
 }
 
