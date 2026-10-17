@@ -7,9 +7,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/gin-gonic/gin"
-	ginmiddleware "github.com/oapi-codegen/gin-middleware"
 )
 
 // Fields is a convenience alias for map[string]any.
@@ -25,14 +22,30 @@ type Groups = map[string]any
 // Used for the root level of the entire canonical log body.
 type Root = map[string]any
 
+// ContextResolver extracts a *FieldBag from a framework-specific context
+// when standard context.Value lookup does not match.
+type ContextResolver func(ctx context.Context) *FieldBag
+
+var (
+	contextResolversMu sync.RWMutex
+	contextResolvers   []ContextResolver
+)
+
+// RegisterContextResolver registers a fallback ContextResolver invoked by BagFromContext
+// when the standard context key is not present (e.g. when a framework wraps or replaces request contexts).
+func RegisterContextResolver(resolver ContextResolver) {
+	if resolver == nil {
+		return
+	}
+	contextResolversMu.Lock()
+	defer contextResolversMu.Unlock()
+	contextResolvers = append(contextResolvers, resolver)
+}
+
 type fieldBagCtxKey struct{}
 type loggerCtxKey struct{}
 
 const defaultCanonicalMessage = "canonical-log-line"
-
-// ginFieldBagKey is the gin.Context key used to store the FieldBag so it survives
-// any middleware (e.g. auth middleware) that replaces c.Request with a fresh context.
-const ginFieldBagKey = "__clog_fieldbag__"
 
 // maxGroupDepth is the maximum nesting depth for dot-separated group paths.
 const maxGroupDepth = 3
@@ -296,9 +309,7 @@ func LoggerFromContext(ctx context.Context) *slog.Logger {
 }
 
 // BagFromContext retrieves the FieldBag from the context. Returns nil if not present.
-// It first checks the standard context chain, then falls back to the gin.Context store
-// (mirroring the context extraction pattern) so it survives any middleware
-// that replaces c.Request with a fresh context.
+// It checks the standard context chain first, then evaluates any registered ContextResolver hooks.
 func BagFromContext(ctx context.Context) *FieldBag {
 	if ctx == nil {
 		return nil
@@ -308,21 +319,13 @@ func BagFromContext(ctx context.Context) *FieldBag {
 		return bag
 	}
 
-	// Check standard gin.Context if present
-	if ginCtx, ok := ctx.Value(gin.ContextKey).(*gin.Context); ok && ginCtx != nil {
-		if val, exists := ginCtx.Get(ginFieldBagKey); exists {
-			if bag, ok := val.(*FieldBag); ok {
-				return bag
-			}
-		}
-	}
+	contextResolversMu.RLock()
+	resolvers := contextResolvers
+	contextResolversMu.RUnlock()
 
-	// Next, check the gin openapi context if present
-	if ginCtx := ginmiddleware.GetGinContext(ctx); ginCtx != nil {
-		if val, exists := ginCtx.Get(ginFieldBagKey); exists {
-			if bag, ok := val.(*FieldBag); ok {
-				return bag
-			}
+	for _, resolve := range resolvers {
+		if bag := resolve(ctx); bag != nil {
+			return bag
 		}
 	}
 
@@ -472,10 +475,10 @@ func (b *FieldBag) snapshot() Root {
 	return out
 }
 
-// hasGroup returns true if the named group path exists.
+// HasGroup reports whether the named group path exists in the FieldBag.
 // Supports dot-separated paths (e.g. "db.getCampaignById").
 // Safe to call on a nil *FieldBag (returns false).
-func (b *FieldBag) hasGroup(name string) bool {
+func (b *FieldBag) HasGroup(name string) bool {
 	if b == nil {
 		return false
 	}
@@ -501,15 +504,19 @@ func (b *FieldBag) hasGroup(name string) bool {
 	return true
 }
 
+func (b *FieldBag) hasGroup(name string) bool {
+	return b.HasGroup(name)
+}
+
 const (
 	warning  = "warning"
 	warnings = "warnings"
 )
 
-// hasWarning returns true if there is a root-level "warning(s)" field,
-// if a group is named "warning(s)", or if any group contains a key named "warning(s)".
+// HasWarning reports whether there is a root-level "warning(s)" field,
+// a group named "warning(s)", or any group containing a key named "warning(s)".
 // Safe to call on a nil *FieldBag (returns false).
-func (b *FieldBag) hasWarning() bool {
+func (b *FieldBag) HasWarning() bool {
 	if b == nil {
 		return false
 	}
@@ -523,6 +530,10 @@ func (b *FieldBag) hasWarning() bool {
 		return true
 	}
 	return hasWarningInMap(b.groups)
+}
+
+func (b *FieldBag) hasWarning() bool {
+	return b.HasWarning()
 }
 
 func hasWarningInMap(m Fields) bool {

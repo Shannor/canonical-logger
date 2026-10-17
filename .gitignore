@@ -29,3 +29,7 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Go workspace files (local multi-module development)
+go.work
+go.work.sum

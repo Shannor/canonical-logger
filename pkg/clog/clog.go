@@ -33,11 +33,8 @@ type ConsoleHandler = root.ConsoleHandler
 // ConsoleHandlerOptions configures ConsoleHandler behavior.
 type ConsoleHandlerOptions = root.ConsoleHandlerOptions
 
-// GCPWriter implements io.Writer and sends logs to Google Cloud Logging.
-type GCPWriter = root.GCPWriter
-
-// GinMiddlewareOption allows configuring GinMiddleware behavior.
-type GinMiddlewareOption = root.GinMiddlewareOption
+// ContextResolver extracts a *FieldBag from a framework-specific context.
+type ContextResolver = root.ContextResolver
 
 // ErrorFormatter extracts structured metadata fields from an error for the "error" group.
 type ErrorFormatter = root.ErrorFormatter
@@ -54,17 +51,18 @@ const (
 
 var (
 	// Context management & field helpers
-	NewContext           = root.NewContext
-	NewContextWithLogger = root.NewContextWithLogger
-	LoggerFromContext    = root.LoggerFromContext
-	BagFromContext       = root.BagFromContext
-	WithField            = root.WithField
-	WithFields           = root.WithFields
-	WithAttrs            = root.WithAttrs
-	WithGroupField       = root.WithGroupField
-	WithGroupFields      = root.WithGroupFields
-	WithGroupAttrs       = root.WithGroupAttrs
-	WithMessage          = root.WithMessage
+	NewContext              = root.NewContext
+	NewContextWithLogger    = root.NewContextWithLogger
+	LoggerFromContext       = root.LoggerFromContext
+	BagFromContext          = root.BagFromContext
+	RegisterContextResolver = root.RegisterContextResolver
+	WithField               = root.WithField
+	WithFields              = root.WithFields
+	WithAttrs               = root.WithAttrs
+	WithGroupField          = root.WithGroupField
+	WithGroupFields         = root.WithGroupFields
+	WithGroupAttrs          = root.WithGroupAttrs
+	WithMessage             = root.WithMessage
 
 	// Result tracking & error formatting
 	SetResult             = root.SetResult
@@ -78,12 +76,10 @@ var (
 	CronFunc      = root.CronFunc
 	Go            = root.Go
 
-	// Middlewares
-	GinMiddleware       = root.GinMiddleware
-	WithSensitiveParams = root.WithSensitiveParams
+	// Middlewares & Trace Extraction
 	HTTPMiddleware      = root.HTTPMiddleware
-	TraceID             = root.TraceID
 	HTTPTraceMiddleware = root.HTTPTraceMiddleware
+	ExtractTrace        = root.ExtractTrace
 
 	// Handlers & Helpers
 	NewSamplingHandler              = root.NewSamplingHandler

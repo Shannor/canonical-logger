@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"net/http"
 	"strings"
-
-	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -21,38 +19,12 @@ const (
 	ResponseTraceHeader = "X-Trace-Id"
 )
 
-// TraceID returns a gin middleware that extracts a trace ID from incoming Sentry
-// headers (sentry-trace or baggage) and adds it to the xlog context for the
-// canonical log line. If no trace headers are present, a random 32-char hex
-// trace ID is generated.
-//
-// The trace ID is also set as a response header (X-Trace-Id) on every response,
-// regardless of success or failure.
-//
-// This middleware must be registered AFTER GinMiddleware() so the FieldBag
-// is available in the context.
-func TraceID() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		traceID, spanID := extractTrace(c.GetHeader(HeaderSentryTrace), c.GetHeader(HeaderBaggage))
-
-		ctx := c.Request.Context()
-		ctx = WithField(ctx, "traceId", traceID)
-		if spanID != "" {
-			ctx = WithField(ctx, "spanId", spanID)
-		}
-		c.Request = c.Request.WithContext(ctx)
-
-		c.Header(ResponseTraceHeader, traceID)
-		c.Next()
-	}
-}
-
 // HTTPTraceMiddleware returns a standard net/http middleware that extracts or generates
 // trace IDs and injects them into the canonical log context and response headers.
 // Must be registered AFTER HTTPMiddleware so the FieldBag is present in context.
 func HTTPTraceMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		traceID, spanID := extractTrace(r.Header.Get(HeaderSentryTrace), r.Header.Get(HeaderBaggage))
+		traceID, spanID := ExtractTrace(r.Header.Get(HeaderSentryTrace), r.Header.Get(HeaderBaggage))
 
 		ctx := r.Context()
 		ctx = WithField(ctx, "traceId", traceID)
@@ -66,10 +38,10 @@ func HTTPTraceMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// extractTrace attempts to extract a trace ID (and optionally span ID) from
+// ExtractTrace extracts a trace ID (and optionally span ID) from incoming trace
 // header values. It checks sentry-trace first, then baggage, and falls back
-// to generating a random 32-char hex trace ID.
-func extractTrace(sentryTrace, baggage string) (traceID, spanID string) {
+// to generating a cryptographically random 32-char hex trace ID.
+func ExtractTrace(sentryTrace, baggage string) (traceID, spanID string) {
 	if sentryTrace != "" {
 		traceID, spanID = parseSentryTrace(sentryTrace)
 		if traceID != "" {
@@ -85,6 +57,10 @@ func extractTrace(sentryTrace, baggage string) (traceID, spanID string) {
 	}
 
 	return generateTraceID(), ""
+}
+
+func extractTrace(sentryTrace, baggage string) (traceID, spanID string) {
+	return ExtractTrace(sentryTrace, baggage)
 }
 
 // parseSentryTrace parses the sentry-trace header format: <trace_id>-<span_id>[-<sampled>]

@@ -515,3 +515,26 @@ func TestFieldBag_WithAttrsAndLogValuer(t *testing.T) {
 	assert.Equal(t, "ent_1", valuerGroup["entityId"])
 	assert.Equal(t, true, valuerGroup["redacted"])
 }
+
+func TestRegisterContextResolver(t *testing.T) {
+	type customKey struct{}
+	expectedBag := &FieldBag{}
+	expectedBag.Set("resolvedVia", "custom-adapter")
+
+	RegisterContextResolver(nil) // no-op when nil
+	RegisterContextResolver(func(ctx context.Context) *FieldBag {
+		if b, ok := ctx.Value(customKey{}).(*FieldBag); ok {
+			return b
+		}
+		return nil
+	})
+
+	ctx := context.WithValue(context.Background(), customKey{}, expectedBag)
+	got := BagFromContext(ctx)
+	require.Same(t, expectedBag, got)
+
+	WithField(ctx, "addedField", 123)
+	out := captureEvent(t, got)
+	assert.Equal(t, "custom-adapter", out["resolvedVia"])
+	assert.Equal(t, float64(123), out["addedField"])
+}

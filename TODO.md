@@ -8,11 +8,11 @@ This document tracks technical debt, decoupling tasks, and architectural improve
 
 Currently, the root package `github.com/Shannor/canonical-logger` directly imports `github.com/gin-gonic/gin`, `github.com/oapi-codegen/gin-middleware`, and `cloud.google.com/go/logging`. This forces all consumers—regardless of what router or cloud provider they use—to pull in large external dependencies and dozens of transitive gRPC and Google Cloud packages.
 
-- [ ] **Zero-Dependency Core**:
+- [x] **Zero-Dependency Core**:
   - The core package (`clog`) must depend **exclusively on the Go standard library** (`log/slog`, `context`, `sync`, `strings`, `time`).
   - Move framework-specific code (`gin`, `oapi-codegen`, `gcp/logging`) into dedicated adapter subpackages.
   - The root `go.mod` should have **zero external direct dependencies** (except test dependencies like `testify`).
-- [ ] **Pluggable Context Resolvers (`ContextResolver`)**:
+- [x] **Pluggable Context Resolvers (`ContextResolver`)**:
   - Currently, `BagFromContext` hardcodes checks for `gin.ContextKey` and `ginmiddleware.GetGinContext(ctx)`:
     ```go
     // Currently hardcoded in fieldbag.go:
@@ -25,10 +25,10 @@ Currently, the root package `github.com/Shannor/canonical-logger` directly impor
     func RegisterContextResolver(resolver ContextResolver)
     ```
   - This allows the Gin and OpenAPI adapters to register their context extraction without the core package ever importing Gin or OpenAPI packages.
-- [ ] **Deprecation & Phasing Out of `pkg/xlog`**:
+- [x] **Deprecation & Phasing Out of `pkg/xlog`**:
   - `pkg/xlog` is a legacy compatibility shim for the original EventX `xlog` package.
-  - Add explicit deprecation warnings, documentation, and a sunset schedule (e.g. remove in v2.0.0).
-  - Ensure zero references to `xlog` remain in the core codebase outside of `pkg/xlog/xlog.go`.
+  - Removed in favor of `github.com/Shannor/canonical-logger` and `pkg/clog`.
+  - Ensure zero references to `xlog` remain in the core codebase.
 
 ---
 
@@ -72,7 +72,7 @@ EventX was designed around an HTTP monolith using Gin. In modern distributed sys
   - Record gRPC root attributes: `grpc.service`, `grpc.method`, `grpc.code`, `grpc.status`, `latency`, `peer.address`.
 
 ### HTTP Router Adapters
-- [ ] **`adapter/gin` (or `middleware/gin`)**:
+- [x] **`adapter/gin` (or `middleware/gin`)**:
   - Isolate `GinMiddleware` and Gin context binding into its own subpackage (`github.com/Shannor/canonical-logger/adapter/gin`).
   - Move `ginFieldBagKey` and Gin context extraction here.
   - Gin consumers import:
@@ -80,7 +80,7 @@ EventX was designed around an HTTP monolith using Gin. In modern distributed sys
     import cloggin "github.com/Shannor/canonical-logger/adapter/gin"
     router.Use(cloggin.Middleware())
     ```
-- [ ] **`adapter/http` (or `middleware/http`)**:
+- [x] **`adapter/http` (Standard `net/http` in Core)**:
   - Standard `net/http` middleware (`func(http.Handler) http.Handler`) supporting Go 1.22+ `http.ServeMux`, Chi, Gorilla, etc.
 - [ ] **Future Framework Adapters**:
   - `adapter/echo` for Labstack Echo (`echo.MiddlewareFunc`).
@@ -262,10 +262,10 @@ In EventX, sensitive parameter masking only handled route path parameter names, 
 
 Vendor SDKs must be isolated into standalone subpackages so consumers only import what they use.
 
-- [ ] **`adapter/gcp`**:
+- [x] **`adapter/gcp`**:
   - Move `GCPWriter` and any dependencies on `cloud.google.com/go/logging` into `adapter/gcp`.
-  - Move `GCPReplaceAttr` here.
-  - Consumers on AWS, bare metal, or Kubernetes should never pull in GCP SDKs.
+  - Re-export `ReplaceAttr` (`clog.GCPReplaceAttr`) in `adapter/gcp`.
+  - Consumers on AWS, bare metal, or Kubernetes never pull in GCP SDKs.
 - [ ] **`adapter/aws`**:
   - AWS CloudWatch JSON formatter (`ReplaceAttr` helper).
   - AWS X-Ray trace extraction (`X-Amzn-Trace-Id`).
@@ -276,8 +276,8 @@ Vendor SDKs must be isolated into standalone subpackages so consumers only impor
   - Slog handler that streams canonical log events directly to an OpenTelemetry Collector via gRPC / HTTP OTLP.
 - [ ] **`adapter/loki`**:
   - Grafana Loki attribute mapper (separating high-cardinality payload fields from low-cardinality stream labels).
-- [ ] **`adapter/dev` (Local Developer Console Formatter)**:
-  - Local terminal pretty-printer: colorized, compact, readable single-line or multi-line output for terminal development, replacing unformatted JSON blobs during local debugging.
+- [x] **Local Developer Console Formatter (`ConsoleHandler`)**:
+  - Local terminal pretty-printer (`NewConsoleHandler` in core): colorized, compact, readable output for terminal development, replacing unformatted JSON blobs during local debugging.
 
 ---
 
@@ -328,8 +328,8 @@ Vendor SDKs must be isolated into standalone subpackages so consumers only impor
     - Protocol agnosticism (HTTP, gRPC, message consumers).
     - Configurable group schemas (supporting `identity` / `tenant` alongside `actor`).
     - Standard W3C TraceContext conventions.
-- [ ] **Ports & Adapters Architecture Guide**:
-  - Author an `ARCHITECTURE.md` explaining the boundary between:
+- [x] **Ports & Adapters Architecture Guide**:
+  - Author `docs/architecture.md` and `docs/adr/0001-ports-and-adapters-multi-module-architecture.md` explaining the boundary between:
     - Pure stdlib core (`github.com/Shannor/canonical-logger`)
     - Router & protocol adapters (`adapter/gin`, `adapter/http`, `adapter/grpc`)
     - Telemetry & cloud adapters (`adapter/otel`, `adapter/gcp`, `adapter/aws`, `adapter/datadog`)

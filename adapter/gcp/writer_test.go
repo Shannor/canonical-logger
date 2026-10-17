@@ -1,4 +1,4 @@
-package clog
+package cloggcp
 
 import (
 	"testing"
@@ -6,8 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestGCPWriter_NilLogger(t *testing.T) {
-	writer := &GCPWriter{Logger: nil}
+func TestWriter_NilLogger(t *testing.T) {
+	writer := &Writer{Logger: nil}
 	data := []byte(`{"message":"test","severity":"INFO"}`)
 	n, err := writer.Write(data)
 	assert.NoError(t, err)
