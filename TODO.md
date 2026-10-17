@@ -9,22 +9,16 @@ This document tracks technical debt, decoupling tasks, and architectural improve
 Currently, the root package `github.com/Shannor/canonical-logger` directly imports `github.com/gin-gonic/gin`, `github.com/oapi-codegen/gin-middleware`, and `cloud.google.com/go/logging`. This forces all consumers—regardless of what router or cloud provider they use—to pull in large external dependencies and dozens of transitive gRPC and Google Cloud packages.
 
 - [x] **Zero-Dependency Core**:
-  - The core package (`clog`) must depend **exclusively on the Go standard library** (`log/slog`, `context`, `sync`, `strings`, `time`).
-  - Move framework-specific code (`gin`, `oapi-codegen`, `gcp/logging`) into dedicated adapter subpackages.
-  - The root `go.mod` should have **zero external direct dependencies** (except test dependencies like `testify`).
+  - The core package (`clog`) depends **exclusively on the Go standard library** (`log/slog`, `context`, `sync`, `strings`, `time`, `net/http`).
+  - Removed third-party framework code (`gin`, `oapi-codegen`, `gcp/logging`) from the repository and documented copy-pasteable userland adapter recipes in `docs/adapters.md` (see [ADR-0001](docs/adr/0001-zero-dependency-core-and-userland-adapters.md)).
+  - The root `go.mod` has **zero external direct dependencies** (except test dependencies like `testify`).
 - [x] **Pluggable Context Resolvers (`ContextResolver`)**:
-  - Currently, `BagFromContext` hardcodes checks for `gin.ContextKey` and `ginmiddleware.GetGinContext(ctx)`:
-    ```go
-    // Currently hardcoded in fieldbag.go:
-    if ginCtx, ok := ctx.Value(gin.ContextKey).(*gin.Context); ...
-    if ginCtx := ginmiddleware.GetGinContext(ctx); ...
-    ```
-  - Define a pluggable resolver interface in core:
+  - Defined a pluggable resolver interface in core:
     ```go
     type ContextResolver func(ctx context.Context) *FieldBag
     func RegisterContextResolver(resolver ContextResolver)
     ```
-  - This allows the Gin and OpenAPI adapters to register their context extraction without the core package ever importing Gin or OpenAPI packages.
+  - Allows Gin and OpenAPI (`oapi-codegen`) users to register context extraction in userland without coupling the core package—or each other—to third-party dependencies.
 - [x] **Deprecation & Phasing Out of `pkg/xlog`**:
   - `pkg/xlog` is a legacy compatibility shim for the original EventX `xlog` package.
   - Removed in favor of `github.com/Shannor/canonical-logger` and `pkg/clog`.
@@ -53,38 +47,22 @@ EventX was designed around an HTTP monolith using Gin. In modern distributed sys
   - Accumulate processing details in `<serviceName>.<methodName>`, evaluate errors, and emit exactly one canonical line per consumed message.
 - [ ] **Standardized Event/Message Metadata Group (`event` / `message`)**:
   - Provide a standardized group for asynchronous message metadata: `messageId`, `topic`, `queue`, `partition`, `offset`, `consumerGroup`, `correlationId`, `causationId`, `schemaVersion`.
-- [ ] **Worker & Background Task Framework Adapters**:
-  - Adapters/middlewares for popular Go task workers:
-    - River (`adapter/worker/river`)
-    - Asynq (`adapter/worker/asynq`)
-    - Temporal workflow & activity interceptors (`adapter/temporal`)
-    - Watermill message router middleware (`adapter/watermill`)
+- [ ] **Worker & Background Task Framework Recipes (`docs/adapters.md`)**:
+  - Document copy-pasteable middleware/interceptor recipes for popular Go task workers:
+    - River
+    - Asynq
+    - Temporal workflow & activity interceptors
+    - Watermill message router middleware
 
-### gRPC Protocol Adapters
-- [ ] **`adapter/grpc` (Unary & Stream Interceptors)**:
-  - Provide server-side interceptors:
-    ```go
-    cloggrpc.UnaryServerInterceptor(opts...)
-    cloggrpc.StreamServerInterceptor(opts...)
-    ```
-  - Extract trace context from gRPC incoming metadata (`metadata.MD`).
-  - Map gRPC status codes (`codes.Code`) to canonical HTTP-equivalent status and log severity (`OK`, `NotFound`, `Internal`, `Unauthenticated`, etc.).
-  - Record gRPC root attributes: `grpc.service`, `grpc.method`, `grpc.code`, `grpc.status`, `latency`, `peer.address`.
-
-### HTTP Router Adapters
-- [x] **`adapter/gin` (or `middleware/gin`)**:
-  - Isolate `GinMiddleware` and Gin context binding into its own subpackage (`github.com/Shannor/canonical-logger/adapter/gin`).
-  - Move `ginFieldBagKey` and Gin context extraction here.
-  - Gin consumers import:
-    ```go
-    import cloggin "github.com/Shannor/canonical-logger/adapter/gin"
-    router.Use(cloggin.Middleware())
-    ```
-- [x] **`adapter/http` (Standard `net/http` in Core)**:
-  - Standard `net/http` middleware (`func(http.Handler) http.Handler`) supporting Go 1.22+ `http.ServeMux`, Chi, Gorilla, etc.
-- [ ] **Future Framework Adapters**:
-  - `adapter/echo` for Labstack Echo (`echo.MiddlewareFunc`).
-  - `adapter/fiber` for Go Fiber (`fiber.Handler`).
+### gRPC & HTTP Router Recipes (`docs/adapters.md`)
+- [x] **gRPC Unary Server Interceptor Recipe**:
+  - Documented in `docs/adapters.md` using `clog`'s exported Ports.
+- [x] **Gin & OpenAPI (`oapi-codegen`) Recipes**:
+  - Documented decoupled Gin middleware, `TraceID`, and separate `gin` and `oapi-codegen` `ContextResolver` recipes in `docs/adapters.md`.
+- [x] **Standard `net/http` in Core (`HTTPMiddleware`, `HTTPTraceMiddleware`)**:
+  - Built-in `net/http` middleware (`func(http.Handler) http.Handler`) supporting Go 1.22+ `http.ServeMux`, Chi, Gorilla, etc.
+- [ ] **Additional Router Recipes (`docs/adapters.md`)**:
+  - Echo (`echo.MiddlewareFunc`) and Fiber (`fiber.Handler`) recipes.
 
 ---
 

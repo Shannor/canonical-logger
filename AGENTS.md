@@ -13,9 +13,9 @@ All code authored, edited, or reviewed by agents MUST adhere strictly to the gui
 Rather than scattering multiple `log.Info()` or `log.Debug()` lines across handlers, services, and DAOs, `clog` implements the **Canonical Log Line** pattern:
 - **One Rich Event Per Request/Task**: Exactly one structured JSON log line is emitted per HTTP request or background task lifecycle.
 - **Context Accumulation**: Metadata is accumulated in a thread-safe `FieldBag` attached to `context.Context` as execution traverses the stack.
-- **Emission at the Boundary**: The canonical line is emitted at the end of the request by `clog.HTTPMiddleware` or `cloggin.Middleware` (`adapter/gin`), or upon task exit by `clog.Go` / `clog.Func` / `clog.CronFunc`.
+- **Emission at the Boundary**: The canonical line is emitted at the end of the request by `clog.HTTPMiddleware` (or a custom router middleware built on `clog`'s Ports—see `docs/adapters.md`), or upon task exit by `clog.Go` / `clog.Func` / `clog.CronFunc`.
 - **Zero Passing of Logger Instances**: Domain services and DAOs only need `context.Context` to enrich logs. Never pass logger instances through function signatures.
-- **Ports & Adapters Module Boundary**: The root module (`github.com/Shannor/canonical-logger`) is a pure Go standard-library package. Domain services and DAOs MUST only import the root `clog` package. Framework and cloud SDK adapters (`adapter/gin`, `adapter/gcp`) are isolated sub-modules imported only at application entrypoints (`main.go` / server setup).
+- **100% Zero-Dependency Core**: `github.com/Shannor/canonical-logger` is a pure Go standard-library package (`log/slog`, `context`, `net/http`). Third-party router middlewares (Gin, Echo, gRPC), `ContextResolver` hooks (`oapi-codegen`), and custom SDK writers (`GCPWriter`) live in userland using the Ports documented in `docs/adapters.md`.
 
 ---
 
@@ -25,7 +25,7 @@ Every layer in the application has strict boundaries regarding what it may and m
 
 | Layer | Functions Permitted | Group Name | Responsibilities |
 | --- | --- | --- | --- |
-| **Middleware** | `clog.HTTPMiddleware`, `cloggin.Middleware`, `clog.HTTPTraceMiddleware`, `cloggin.TraceID`, Auth middlewares | `actor` / root fields | Emits root HTTP metadata (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
+| **Middleware** | `clog.HTTPMiddleware`, `clog.HTTPTraceMiddleware`, Custom router/Auth middlewares | `actor` / root fields | Emits root HTTP metadata (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
 | **Boundary (API / Webhook Handlers)** | `SetResult()`, `DeferResult()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the event name (`-success` / `-failure`), captures request payload metadata and query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. MUST NOT set event names or populate the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). MUST NOT set event names or populate `"error"`. Returns standard Go errors. |

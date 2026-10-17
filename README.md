@@ -14,13 +14,12 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 
 ## Highlights
 
-- **Zero-Dependency Standard Library Core**: Built directly on Go's `log/slog` and `net/http` with **zero external runtime dependencies** in the root module.
-- **Plug-and-Play Adapters (Ports & Adapters)**: Isolated sub-modules for third-party routers and cloud SDKs ([`adapter/gin`](adapter/gin), [`adapter/gcp`](adapter/gcp))—only pull in the dependencies you actually use.
+- **100% Zero-Dependency Standard Library Core**: Built directly on Go's `log/slog`, `context`, and `net/http` with **zero external runtime dependencies** in `go.mod`.
+- **Composable Ports for Any Framework**: Exposes `RegisterContextResolver`, `HasGroup`, `HasWarning`, `ExtractTrace`, and `SetErrorFormatter` so you can wire any third-party router (Gin, Echo, Fiber), OpenAPI generator (`oapi-codegen`), RPC server (gRPC), or cloud SDK (`io.Writer`) in ~25 lines of code (see [Building Custom Adapters & Writers (`docs/adapters.md`)](docs/adapters.md)).
 - **Single Structured Event**: One log entry per request with complete operational, business, and error context.
 - **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getOrder", "rows", 1)`).
 - **Strongly-Typed `slog.Attr` & `LogValuer` Support**: Fast-path `WithAttrs` and `WithGroupAttrs` helpers plus automatic `slog.LogValuer` evaluation for custom type serialization and PII redaction.
-- **HTTP Middlewares**: Built-in standard `net/http` (`HTTPMiddleware`, compatible with Go 1.22+ `ServeMux`, Chi, Gorilla) and [Gin](adapter/gin) (`cloggin.Middleware`).
-- **Trace Propagation**: Out-of-the-box W3C / Sentry trace ID extraction (`sentry-trace`, `baggage`) and fallback generation with response header injection.
+- **Standard `net/http` Middlewares**: Built-in `HTTPMiddleware` and `HTTPTraceMiddleware` compatible with Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux, and any `http.Handler`.
 - **Rich Boundary Error Tracking**: `SetResult` and `DeferResult` automatically record error details, unwrap root causes, extract `Code()` / `Category()` / `ErrorFields()` metadata via pluggable `ErrorFormatter`, and format outcome messages (`<event>-success`, `<event>-failure`).
 - **Async & Background Support**:
   - `clog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, logger propagation, and parent `FieldBag` correlation.
@@ -29,13 +28,11 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 - **Adaptive & Contextual Level Sampling**: `NewSamplingHandler` and `NewSamplingHandlerWithEvaluator` guarantee 100% capture of Warnings, Errors, Fatal, and Panics while sampling high-volume Info/Debug/Trace traffic by rate or custom context predicates.
 - **Local Dev Console & Cloud Logging Ready**:
   - `NewConsoleHandler` for colorized, human-readable local terminal output.
-  - `NewJSONHandler` and `GCPReplaceAttr` in core for zero-dependency structured JSON, plus [`adapter/gcp`](adapter/gcp) (`cloggcp.Writer`) for direct Google Cloud Logging SDK streaming.
+  - `NewJSONHandler` and `GCPReplaceAttr` in core for zero-dependency structured JSON.
 
 ---
 
 ## Installation
-
-### Core Library (Zero External Dependencies)
 
 ```bash
 go get github.com/Shannor/canonical-logger
@@ -49,18 +46,6 @@ import "github.com/Shannor/canonical-logger"
 import "github.com/Shannor/canonical-logger/pkg/clog"
 ```
 
-### Optional Framework & Cloud Adapters
-
-Adapters are published as isolated Go modules under [`adapter/`](adapter/README.md) so the core library never forces transitive framework or cloud SDK dependencies into your `go.mod`:
-
-```bash
-# Gin HTTP Middleware & OpenAPI Context Resolver
-go get github.com/Shannor/canonical-logger/adapter/gin
-
-# Google Cloud Logging SDK Writer
-go get github.com/Shannor/canonical-logger/adapter/gcp
-```
-
 ---
 
 ## Architectural Principles & Layer Responsibilities
@@ -69,7 +54,7 @@ Canonical logging relies on a clear separation of concerns across application la
 
 | Layer | Functions Permitted | Group Name | Purpose & Invariants |
 | --- | --- | --- | --- |
-| **Middleware** | `clog.HTTPMiddleware`, `cloggin.Middleware`, `clog.HTTPTraceMiddleware`, `cloggin.TraceID`, Auth middlewares | `actor` / root | Emits HTTP root fields (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
+| **Middleware** | `clog.HTTPMiddleware`, `clog.HTTPTraceMiddleware`, Custom router/Auth middlewares | `actor` / root | Emits HTTP root fields (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
 | **Boundary (API / Webhooks)** | `SetResult()`, `DeferResult()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the canonical event name (`-success` / `-failure`), adds request input parameters & query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. **MUST NOT** set event names or touch the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). **MUST NOT** set event names or touch `"error"`. Returns standard Go errors. |
@@ -159,14 +144,14 @@ Here is how context accumulates cleanly across the application layers without pa
 The handler uses `defer clog.DeferResult` to capture the final outcome and tags the `request` group with input parameters:
 
 ```go
-func (api OrderAPI) Checkout(c *gin.Context) {
-    ctx := c.Request.Context()
+func (api OrderAPI) Checkout(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
     var err error
     defer clog.DeferResult(ctx, "checkout-order", &err)
 
     var req CheckoutRequest
-    if err = c.ShouldBindJSON(&req); err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+    if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
+        http.Error(w, err.Error(), http.StatusBadRequest)
         return
     }
 
@@ -180,11 +165,12 @@ func (api OrderAPI) Checkout(c *gin.Context) {
     var order *models.Order
     order, err = api.orderService.Checkout(ctx, req)
     if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+        http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
 
-    c.JSON(http.StatusOK, order)
+    w.Header().Set("Content-Type", "application/json")
+    _ = json.NewEncoder(w).Encode(order)
 }
 ```
 
@@ -275,8 +261,8 @@ When using `defer clog.DeferResult(ctx, "my-operation", &err)`, the deferred cal
 
 ```go
 // ❌ WRONG: := in a nested block shadows the outer 'err'
-func (api API) Handle(c *gin.Context) {
-    ctx := c.Request.Context()
+func (api API) Handle(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
     var err error
     defer clog.DeferResult(ctx, "handle-action", &err)
 
@@ -284,15 +270,16 @@ func (api API) Handle(c *gin.Context) {
         // := creates a new local 'err' scoped only to this if block!
         data, err := api.service.Process(ctx)
         if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
+            http.Error(w, err.Error(), http.StatusInternalServerError)
             return // BUG: outer 'err' is still nil -> logs "handle-action-success"!
         }
+        _ = data
     }
 }
 
 // ✅ CORRECT: Assign to the outer 'err' using '='
-func (api API) Handle(c *gin.Context) {
-    ctx := c.Request.Context()
+func (api API) Handle(w http.ResponseWriter, r *http.Request) {
+    ctx := r.Context()
     var err error
     defer clog.DeferResult(ctx, "handle-action", &err)
 
@@ -300,9 +287,10 @@ func (api API) Handle(c *gin.Context) {
         var data *Data
         data, err = api.service.Process(ctx) // Reuses the outer 'err'
         if err != nil {
-            c.JSON(500, gin.H{"error": err.Error()})
+            http.Error(w, err.Error(), http.StatusInternalServerError)
             return // Correctly logs "handle-action-failure" with error group!
         }
+        _ = data
     }
 }
 ```
@@ -311,69 +299,7 @@ func (api API) Handle(c *gin.Context) {
 
 ## Quick Start
 
-### 1. With Gin (`adapter/gin`)
-
-```go
-package main
-
-import (
-	"context"
-	"log/slog"
-	"net/http"
-	"os"
-
-	"github.com/Shannor/canonical-logger"
-	cloggin "github.com/Shannor/canonical-logger/adapter/gin"
-	"github.com/gin-gonic/gin"
-)
-
-func main() {
-	// Configure slog JSON handler with standard "message" key
-	logger := slog.New(clog.NewJSONHandler(os.Stdout, nil))
-	slog.SetDefault(logger)
-
-	r := gin.New()
-
-	// Register canonical logger and trace middleware from adapter/gin
-	r.Use(cloggin.Middleware())
-	r.Use(cloggin.TraceID())
-
-	r.POST("/api/v1/orders", func(c *gin.Context) {
-		ctx := c.Request.Context()
-
-		var err error
-		defer clog.DeferResult(ctx, "create-order", &err)
-
-		// Enrich request context
-		clog.WithGroupFields(ctx, "request", clog.Fields{
-			"cartId":     "cart_99",
-			"totalCents": 5000,
-		})
-
-		// Call business layer passing ctx
-		err = createOrderService(ctx, "cart_99")
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
-	})
-
-	r.Run(":8080")
-}
-
-func createOrderService(ctx context.Context, cartID string) error {
-	clog.WithGroupField(ctx, "orderService.create", "orderId", "ord-456")
-	clog.WithGroupFields(ctx, "db.insertOrder", clog.Fields{
-		"table":      "orders",
-		"durationMs": 12,
-	})
-	return nil
-}
-```
-
-### 2. With Standard `net/http` / Chi
+### 1. Standard `net/http` / Go 1.22+ `ServeMux` / Chi (Built-In)
 
 ```go
 package main
@@ -393,16 +319,29 @@ func main() {
 
 	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		clog.WithGroupField(ctx, "user", "userId", r.PathValue("id"))
+		var err error
+		defer clog.DeferResult(ctx, "get-user", &err)
+
+		clog.WithGroupField(ctx, "request", "userId", r.PathValue("id"))
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"status":"ok"}`))
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
 	})
 
 	// Wrap handler with clog HTTPMiddleware and HTTPTraceMiddleware
 	handler := clog.HTTPMiddleware(clog.HTTPTraceMiddleware(mux))
-	http.ListenAndServe(":8080", handler)
+	_ = http.ListenAndServe(":8080", handler)
 }
 ```
+
+### 2. Custom Frameworks (Gin, Echo, OpenAPI `oapi-codegen`, gRPC)
+
+To keep `canonical-logger` 100% dependency-free, third-party router middlewares and `ContextResolver` hooks are written in your application using `clog`'s exported Ports (`NewContext`, `BagFromContext`, `RegisterContextResolver`, `HasGroup`, `HasWarning`, `ExtractTrace`).
+
+See **[Building Custom Adapters, Middlewares & Writers (`docs/adapters.md`)](docs/adapters.md)** for ready-to-copy recipes for:
+- **Gin** (`CanonicalLogger` middleware, `TraceID`, sensitive route parameter masking, and `gin.ContextKey` resolver)
+- **OpenAPI `oapi-codegen/gin-middleware`** (`ContextResolver`)
+- **gRPC** (`UnaryServerInterceptor`)
+- **Google Cloud Logging SDK** (`GCPWriter`)
 
 ---
 
@@ -561,9 +500,7 @@ c.AddFunc("@hourly", clog.CronFunc("sync-subscriptions", func(ctx context.Contex
 
 ## Google Cloud Logging Integration
 
-### Option A: Standard JSON to Stdout (Cloud Run, GKE, Compute Engine)
-
-GCP Cloud Logging automatically parses stdout JSON. Use `clog.GCPReplaceAttr` (included in the zero-dependency core) to map the level key to `"severity"` (with values `"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`) and message to `"message"`:
+GCP Cloud Logging automatically parses stdout JSON on Cloud Run, GKE, and Compute Engine. Use `clog.GCPReplaceAttr` (included in the zero-dependency core) to map the level key to `"severity"` (`"DEBUG"`, `"INFO"`, `"WARNING"`, `"ERROR"`) and message to `"message"`:
 
 ```go
 import (
@@ -579,46 +516,7 @@ handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 slog.SetDefault(slog.New(handler))
 ```
 
-### Option B: Google Cloud Logging SDK (`adapter/gcp`)
-
-If using the GCP Cloud Logging Go SDK directly, install `github.com/Shannor/canonical-logger/adapter/gcp`:
-
-```go
-import (
-    "log/slog"
-
-    "cloud.google.com/go/logging"
-    cloggcp "github.com/Shannor/canonical-logger/adapter/gcp"
-)
-
-client, err := logging.NewClient(ctx, "my-gcp-project-id")
-if err != nil {
-    panic(err)
-}
-defer client.Close()
-
-gcpLogger := client.Logger("my-service-name")
-writer := &cloggcp.Writer{Logger: gcpLogger}
-
-logger := slog.New(slog.NewJSONHandler(writer, &slog.HandlerOptions{
-    ReplaceAttr: cloggcp.ReplaceAttr,
-}))
-slog.SetDefault(logger)
-```
-
----
-
-## Sensitive Parameter Masking
-
-In Gin, sensitive route parameters (such as tokens or credentials in URLs) can be masked in the `path` field to prevent leaking secrets:
-
-```go
-router.Use(cloggin.Middleware(
-    cloggin.WithSensitiveParams("token", "apiKey"),
-))
-```
-
-When a matching parameter is present, `path` logs the router template (e.g. `/invites/:token`) instead of the raw secret value.
+*(If your application streams logs directly via the `cloud.google.com/go/logging` SDK rather than stdout, see the `GCPWriter` recipe in [`docs/adapters.md`](docs/adapters.md#option-b-custom-google-cloud-logging-sdk-iowriter)).*
 
 ---
 
@@ -636,19 +534,12 @@ assert.Equal(t, "canonical-log-line", bag.Message())
 
 ---
 
-## Architecture: Ports & Adapters (Multi-Module Repository)
+## Architecture & Documentation
 
-`canonical-logger` uses a **Ports & Adapters (Hexagonal Architecture)** structured as a **Go Multi-Module Repository**:
-
-- **Zero-Dependency Core (`github.com/Shannor/canonical-logger`)**: Depends exclusively on the Go standard library (`log/slog`, `context`, `net/http`). Domain services and DAOs only ever import `clog`.
-- **Pluggable Ports**: The core package exposes `clog.RegisterContextResolver`, `(*FieldBag).HasGroup`, `(*FieldBag).HasWarning`, and `clog.ExtractTrace` so framework adapters can integrate without the core package ever importing third-party libraries.
-- **Isolated Adapter Sub-Modules (`adapter/*`)**: Each third-party integration ([`adapter/gin`](adapter/gin), [`adapter/gcp`](adapter/gcp)) has its own `go.mod` so consumers only download dependencies for the adapters they explicitly install.
-- **Lockstep Versioning (`Makefile`)**: Releases tag the root module (`vX.Y.Z`) and all adapter modules (`adapter/<name>/vX.Y.Z`) in lockstep using `make bump VERSION=vX.Y.Z` and `make tag VERSION=vX.Y.Z`.
-
-For more details:
-- **[`docs/architecture.md`](docs/architecture.md)**: Deep-dive into the Ports & Adapters architecture, module boundaries, and context resolution flow.
-- **[`docs/adr/0001-ports-and-adapters-multi-module-architecture.md`](docs/adr/0001-ports-and-adapters-multi-module-architecture.md)**: Architectural decision record explaining why we chose the multi-module Ports & Adapters design.
-- **[`adapter/README.md`](adapter/README.md)**: How `go.work` operates for local multi-module development, how to create new adapters, and how release tagging works.
+`canonical-logger` uses a **Zero-Dependency Ports & Adapters** architecture:
+- **[`docs/adapters.md`](docs/adapters.md)**: Step-by-step guide and copy-pasteable recipes for custom middlewares (Gin, gRPC), `ContextResolver` hooks (`gin`, `oapi-codegen`), and custom `io.Writer` sinks.
+- **[`docs/architecture.md`](docs/architecture.md)**: Deep-dive into the core Ports, `FieldBag` internals, and context resolution flow.
+- **[`docs/adr/0001-zero-dependency-core-and-userland-adapters.md`](docs/adr/0001-zero-dependency-core-and-userland-adapters.md)**: Architectural Decision Record explaining why `clog` ships zero third-party adapters in-repo in favor of composable Ports and userland recipes.
 - **[`TODO.md`](TODO.md)**: Project roadmap and upcoming features.
 
 ---
