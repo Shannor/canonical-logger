@@ -16,6 +16,7 @@ Every canonical logging integration uses four building blocks exported by `githu
 | `clog.BagFromContext(ctx)` | Retrieves the active `*clog.FieldBag` from `ctx` (or via registered `ContextResolver` hooks). |
 | `clog.RegisterContextResolver(fn)` | Registers a fallback `func(ctx context.Context) *clog.FieldBag` for frameworks that wrap or replace `context.Context`. |
 | `bag.HasGroup("error")` / `bag.HasWarning()` / `bag.Message()` / `bag.Attrs()` | Inspects accumulated state at the end of a request/task to determine log level and emit `[]slog.Attr`. |
+| `clog.Run(ctx, event, fn)` / `clog.RunValue` | Records a boundary outcome from `fn`'s returned error. Use inside framework handlers and RPC methods. Adapters should not record outcomes themselves. |
 | `clog.ExtractTrace(sentryTrace, baggage)` | Extracts `traceId` and `spanId` from incoming headers or generates a random 32-char hex `traceId`. |
 
 ---

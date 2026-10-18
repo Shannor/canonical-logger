@@ -3,6 +3,8 @@
 package clog
 
 import (
+	"context"
+
 	root "github.com/Shannor/canonical-logger"
 )
 
@@ -39,6 +41,9 @@ type ContextResolver = root.ContextResolver
 // ErrorFormatter extracts structured metadata fields from an error for the "error" group.
 type ErrorFormatter = root.ErrorFormatter
 
+// HTTPHandlerFunc is an error-returning HTTP handler used with HTTPHandler.
+type HTTPHandlerFunc = root.HTTPHandlerFunc
+
 const (
 	LevelTrace = root.LevelTrace
 	LevelDebug = root.LevelDebug
@@ -65,8 +70,8 @@ var (
 	WithMessage             = root.WithMessage
 
 	// Result tracking & error formatting
-	SetResult             = root.SetResult
-	DeferResult           = root.DeferResult
+	Run                   = root.Run
+	HTTPHandler           = root.HTTPHandler
 	SetErrorFormatter     = root.SetErrorFormatter
 	DefaultErrorFormatter = root.DefaultErrorFormatter
 
@@ -88,3 +93,8 @@ var (
 	NewConsoleHandler               = root.NewConsoleHandler
 	GCPReplaceAttr                  = root.GCPReplaceAttr
 )
+
+// RunValue is the value-returning form of Run. See root.RunValue.
+func RunValue[T any](ctx context.Context, baseEvent string, fn func(ctx context.Context) (T, error)) (T, error) {
+	return root.RunValue(ctx, baseEvent, fn)
+}

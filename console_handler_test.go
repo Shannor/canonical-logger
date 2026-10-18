@@ -25,7 +25,7 @@ func TestConsoleHandler_BasicAndCanonicalGroups(t *testing.T) {
 		"requestorId": "usr_123",
 	})
 	WithGroupField(ctx, "db.queryOrders", "rows", 5)
-	SetResult(ctx, "list-orders", nil)
+	recordResult(ctx, "list-orders", nil)
 
 	bag := BagFromContext(ctx)
 	logger.LogAttrs(ctx, LevelInfo, bag.Message(), bag.Attrs()...)
@@ -46,7 +46,7 @@ func TestConsoleHandler_ColorOutputAndErrors(t *testing.T) {
 	logger := slog.New(h)
 
 	ctx := NewContext(context.Background())
-	SetResult(ctx, "charge-card", errors.New("card declined"))
+	recordResult(ctx, "charge-card", errors.New("card declined"))
 
 	bag := BagFromContext(ctx)
 	logger.LogAttrs(ctx, LevelError, bag.Message(), bag.Attrs()...)

@@ -1,173 +1,39 @@
 package clog
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// TestSetResult_NilError verifies that SetResult sets message to "{baseEvent}-success" when err is nil.
-func TestSetResult_NilError(t *testing.T) {
+// TestRecordResult_NilError verifies that a nil error sets message to "{baseEvent}-success".
+func TestRecordResult_NilError(t *testing.T) {
 	ctx := NewContext(context.Background())
-	SetResult(ctx, "get-campaign", nil)
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "get-campaign-success", bag.Message())
+	recordResult(ctx, "get-campaign", nil)
+	assert.Equal(t, "get-campaign-success", BagFromContext(ctx).Message())
 }
 
-// TestSetResult_WithError verifies that SetResult sets message to "{baseEvent}-failure" when err is non-nil.
-func TestSetResult_WithError(t *testing.T) {
+// TestRecordResult_WithError verifies that an error sets "{baseEvent}-failure" and the error group.
+func TestRecordResult_WithError(t *testing.T) {
 	ctx := NewContext(context.Background())
-	SetResult(ctx, "get-campaign", errors.New("something went wrong"))
+	recordResult(ctx, "get-campaign", errors.New("db error"))
 
 	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
 	assert.Equal(t, "get-campaign-failure", bag.Message())
-}
-
-// TestSetResult_WithError_SetsErrorGroup verifies that SetResult creates an error group when none exists.
-func TestSetResult_WithError_SetsErrorGroup(t *testing.T) {
-	ctx := NewContext(context.Background())
-	SetResult(ctx, "get-campaign", errors.New("db error"))
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
 	assert.True(t, bag.hasGroup("error"))
-
-	errGroup := bag.getGroup("error")
-	require.NotNil(t, errGroup)
-	assert.Equal(t, "db error", errGroup["err"])
+	assert.Equal(t, "db error", bag.getGroup("error")["err"])
 }
 
-// TestSetResult_NilBag verifies that SetResult handles nil bag gracefully (no panic).
-func TestSetResult_NilBag(t *testing.T) {
-	ctx := context.Background() // no FieldBag in context
-	result := SetResult(ctx, "get-campaign", nil)
-	assert.Equal(t, ctx, result)
-}
-
-// TestSetResult_ReturnsCtx verifies that SetResult returns the context.
-func TestSetResult_ReturnsCtx(t *testing.T) {
-	ctx := NewContext(context.Background())
-	returned := SetResult(ctx, "get-campaign", nil)
-	assert.Equal(t, ctx, returned)
-}
-
-// TestDeferResult_Success verifies that DeferResult logs success when error is nil at return time.
-func TestDeferResult_Success(t *testing.T) {
-	ctx := NewContext(context.Background())
-	func() {
-		var err error
-		defer DeferResult(ctx, "my-operation", &err)
-	}()
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "my-operation-success", bag.Message())
-	assert.False(t, bag.hasGroup("error"))
-}
-
-// TestDeferResult_Failure verifies that DeferResult logs failure when error is set.
-func TestDeferResult_Failure(t *testing.T) {
-	ctx := NewContext(context.Background())
-	func() {
-		var err error
-		defer DeferResult(ctx, "my-operation", &err)
-		err = errors.New("something went wrong")
-	}()
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "my-operation-failure", bag.Message())
-	assert.True(t, bag.hasGroup("error"))
-	errGroup := bag.getGroup("error")
-	require.NotNil(t, errGroup)
-	assert.Equal(t, "something went wrong", errGroup["err"])
-}
-
-// TestDeferResult_NilPointer verifies that DeferResult handles nil error pointer gracefully.
-func TestDeferResult_NilPointer(t *testing.T) {
-	ctx := NewContext(context.Background())
-	func() {
-		defer DeferResult(ctx, "my-operation", nil)
-	}()
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "my-operation-success", bag.Message())
-}
-
-// TestDeferResult_ShadowedError_FailsToPropagate demonstrates that shadowing an error
-// variable in a nested block (using :=) prevents the deferred function from seeing the error.
-func TestDeferResult_ShadowedError_FailsToPropagate(t *testing.T) {
-	ctx := NewContext(context.Background())
-	func() {
-		var err error
-		defer DeferResult(ctx, "my-operation", &err)
-
-		if true {
-			err := errors.New("nested block error")
-			_ = err
-		}
-	}()
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "my-operation-success", bag.Message())
-	assert.False(t, bag.hasGroup("error"))
-}
-
-// TestDeferResult_ReassignedError_Propagates demonstrates that reassigning the outer error
-// variable (using =) inside a nested block correctly propagates the error to the deferred function.
-func TestDeferResult_ReassignedError_Propagates(t *testing.T) {
-	ctx := NewContext(context.Background())
-	func() {
-		var err error
-		defer DeferResult(ctx, "my-operation", &err)
-
-		if true {
-			err = errors.New("nested block error")
-		}
-	}()
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "my-operation-failure", bag.Message())
-	assert.True(t, bag.hasGroup("error"))
-	errGroup := bag.getGroup("error")
-	require.NotNil(t, errGroup)
-	assert.Equal(t, "nested block error", errGroup["err"])
-}
-
-// TestDeferResult_SameScope_AssignWithNewVariable_Propagates demonstrates that using := in the same
-// scope as the outer error variable declaration, where at least one new variable is being declared,
-// correctly reuses/reassigns the existing err variable and propagates the error.
-func TestDeferResult_SameScope_AssignWithNewVariable_Propagates(t *testing.T) {
-	ctx := NewContext(context.Background())
-	dummyFunc := func() (string, error) {
-		return "", errors.New("same scope error")
-	}
-
-	func() {
-		var err error
-		defer DeferResult(ctx, "my-operation", &err)
-
-		val, err := dummyFunc()
-		_ = val
-		_ = err
-	}()
-
-	bag := BagFromContext(ctx)
-	require.NotNil(t, bag)
-	assert.Equal(t, "my-operation-failure", bag.Message())
-	assert.True(t, bag.hasGroup("error"))
-	errGroup := bag.getGroup("error")
-	require.NotNil(t, errGroup)
-	assert.Equal(t, "same scope error", errGroup["err"])
+// TestRecordResult_NilBag verifies that recording on a context without a FieldBag is a no-op.
+func TestRecordResult_NilBag(t *testing.T) {
+	assert.NotPanics(t, func() { recordResult(context.Background(), "get-campaign", errors.New("x")) })
 }
 
 type codedError struct {
@@ -178,11 +44,11 @@ type codedError struct {
 	cause    error
 }
 
-func (e *codedError) Error() string                { return e.msg }
-func (e *codedError) Code() string                 { return e.code }
-func (e *codedError) Category() string             { return e.category }
-func (e *codedError) ErrorFields() map[string]any  { return e.fields }
-func (e *codedError) Unwrap() error                { return e.cause }
+func (e *codedError) Error() string               { return e.msg }
+func (e *codedError) Code() string                { return e.code }
+func (e *codedError) Category() string            { return e.category }
+func (e *codedError) ErrorFields() map[string]any { return e.fields }
+func (e *codedError) Unwrap() error               { return e.cause }
 
 func TestDefaultErrorFormatter_ExtractsMetadataAndCause(t *testing.T) {
 	rootErr := errors.New("connection refused")
@@ -195,7 +61,7 @@ func TestDefaultErrorFormatter_ExtractsMetadataAndCause(t *testing.T) {
 	}
 
 	ctx := NewContext(context.Background())
-	SetResult(ctx, "create-order", richErr)
+	recordResult(ctx, "create-order", richErr)
 
 	bag := BagFromContext(ctx)
 	errGroup := bag.getGroup("error")
@@ -218,7 +84,7 @@ func TestSetErrorFormatter_CustomAndReset(t *testing.T) {
 	})
 
 	ctx := NewContext(context.Background())
-	SetResult(ctx, "custom-op", errors.New("boom"))
+	recordResult(ctx, "custom-op", errors.New("boom"))
 
 	bag := BagFromContext(ctx)
 	errGroup := bag.getGroup("error")
@@ -229,8 +95,178 @@ func TestSetErrorFormatter_CustomAndReset(t *testing.T) {
 	// Reset to DefaultErrorFormatter
 	SetErrorFormatter(nil)
 	ctx2 := NewContext(context.Background())
-	SetResult(ctx2, "default-op", errors.New("plain"))
+	recordResult(ctx2, "default-op", errors.New("plain"))
 	errGroup2 := BagFromContext(ctx2).getGroup("error")
 	assert.Equal(t, "plain", errGroup2["err"])
 	assert.NotContains(t, errGroup2, "custom")
+}
+
+// --- Return-value result flow (merged from result_flow_test.go) ---
+
+var errProcess = errors.New("process failed")
+
+func process(context.Context) (string, error) { return "", errProcess }
+
+// TestRun_ShadowedErrorStillRecordsFailure is the regression test for the shadowing
+// gotcha: inside Run the outcome comes from the return value, so := is harmless.
+func TestRun_ShadowedErrorStillRecordsFailure(t *testing.T) {
+	ctx := NewContext(context.Background())
+	got := Run(ctx, "handle-action", func(ctx context.Context) error {
+		if true {
+			data, err := process(ctx) // := shadowing is harmless inside Run
+			if err != nil {
+				return err
+			}
+			_ = data
+		}
+		return nil
+	})
+
+	require.ErrorIs(t, got, errProcess)
+	bag := BagFromContext(ctx)
+	assert.Equal(t, "handle-action-failure", bag.Message())
+	assert.Equal(t, "process failed", bag.getGroup("error")["err"])
+}
+
+func TestRun_Success(t *testing.T) {
+	ctx := NewContext(context.Background())
+	require.NoError(t, Run(ctx, "op", func(context.Context) error { return nil }))
+	assert.Equal(t, "op-success", BagFromContext(ctx).Message())
+}
+
+func TestRun_PanicRecordsFailureAndRepanics(t *testing.T) {
+	ctx := NewContext(context.Background())
+	assert.PanicsWithValue(t, "kaboom", func() {
+		_ = Run(ctx, "op", func(context.Context) error { panic("kaboom") })
+	})
+	bag := BagFromContext(ctx)
+	assert.Equal(t, "op-failure", bag.Message())
+	assert.Contains(t, bag.getGroup("error")["err"], "kaboom")
+}
+
+func TestRunValue(t *testing.T) {
+	ctx := NewContext(context.Background())
+	v, err := RunValue(ctx, "get-user", func(context.Context) (int, error) { return 42, nil })
+	require.NoError(t, err)
+	assert.Equal(t, 42, v)
+	assert.Equal(t, "get-user-success", BagFromContext(ctx).Message())
+
+	ctx2 := NewContext(context.Background())
+	_, err = RunValue(ctx2, "get-user", func(ctx context.Context) (string, error) { return process(ctx) })
+	require.ErrorIs(t, err, errProcess)
+	assert.Equal(t, "get-user-failure", BagFromContext(ctx2).Message())
+}
+
+func TestRecordResult_FailureIsSticky(t *testing.T) {
+	ctx := NewContext(context.Background())
+	recordResult(ctx, "op", errProcess)
+	recordResult(ctx, "op", nil)
+
+	bag := BagFromContext(ctx)
+	assert.Equal(t, "op-failure", bag.Message())
+	assert.Equal(t, "process failed", bag.getGroup("error")["err"])
+}
+
+func TestRecordResult_NilErrorWithExistingErrorGroupIsFailure(t *testing.T) {
+	ctx := NewContext(context.Background())
+	// e.g. a router adapter attached framework errors to the "error" group.
+	WithGroupField(ctx, "error", "err", "bind failed")
+	recordResult(ctx, "op", nil)
+	assert.Equal(t, "op-failure", BagFromContext(ctx).Message())
+}
+
+func TestHTTPHandler_RecordsReturnedError(t *testing.T) {
+	var buf bytes.Buffer
+	h := HTTPHandler("handle-action", func(w http.ResponseWriter, r *http.Request) error {
+		data, err := process(r.Context())
+		if err != nil {
+			http.Error(w, "internal", http.StatusInternalServerError)
+			return err
+		}
+		_, _ = w.Write([]byte(data))
+		return nil
+	})
+	srv := setupHTTPServer(&buf, h.ServeHTTP)
+
+	srv.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/x", nil))
+	out := parseLogLine(t, &buf)
+	assert.Equal(t, "handle-action-failure", out["message"])
+	errGroup := out["error"].(map[string]any)
+	assert.Equal(t, "process failed", errGroup["err"])
+}
+
+func TestFunc_ReturnsAndRecordsError(t *testing.T) {
+	var got error
+	lines := captureBackground(t, func() {
+		got = Func("startup-migrations", func(ctx context.Context) error {
+			_, err := process(ctx)
+			return err
+		})
+	})
+	require.ErrorIs(t, got, errProcess)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "startup-migrations-failure", lines[0]["message"])
+	assert.Equal(t, "ERROR", lines[0]["level"])
+}
+
+func TestFunc_PanicRecordedThenPropagates(t *testing.T) {
+	lines := captureBackground(t, func() {
+		assert.Panics(t, func() {
+			_ = Func("boom-task", func(context.Context) error { panic("boom") })
+		})
+	})
+	require.Len(t, lines, 1, "canonical line must still be flushed")
+	assert.Equal(t, "boom-task-failure", lines[0]["message"])
+}
+
+func TestCronFunc_RecordsSuccess(t *testing.T) {
+	lines := captureBackground(t, func() {
+		CronFunc("sync", func(context.Context) error { return nil })()
+	})
+	require.Len(t, lines, 1)
+	assert.Equal(t, "sync-success", lines[0]["message"])
+}
+
+func TestGo_RecordsReturnedError(t *testing.T) {
+	var wg sync.WaitGroup
+	wg.Add(1)
+	lines := captureBackground(t, func() {
+		Go(context.Background(), "send-email", func(ctx context.Context) error {
+			defer wg.Done()
+			_, err := process(ctx)
+			return err
+		})
+		wg.Wait()
+		goWait()
+	})
+	require.Len(t, lines, 1)
+	assert.Equal(t, "send-email-failure", lines[0]["message"])
+	assert.Equal(t, "process failed", lines[0]["error"].(map[string]any)["err"])
+}
+
+func TestRun_NestedOuterOwnsEventAndFailureIsSticky(t *testing.T) {
+	ctx := NewContext(context.Background())
+	_ = Run(ctx, "outer", func(ctx context.Context) error {
+		_ = Run(ctx, "inner", func(context.Context) error { return errProcess })
+		return nil // outer swallows the error, but the failure is sticky
+	})
+	assert.Equal(t, "inner-failure", BagFromContext(ctx).Message())
+
+	ctx2 := NewContext(context.Background())
+	_ = Run(ctx2, "outer", func(ctx context.Context) error {
+		return Run(ctx, "inner", func(context.Context) error { return nil })
+	})
+	assert.Equal(t, "outer-success", BagFromContext(ctx2).Message())
+}
+
+// TestHTTPHandler_NoBagIsNoOp verifies HTTPHandler does not depend on HTTPMiddleware:
+// without a FieldBag on the request context it simply serves the request.
+func TestHTTPHandler_NoBagIsNoOp(t *testing.T) {
+	h := HTTPHandler("no-bag", func(w http.ResponseWriter, r *http.Request) error {
+		w.WriteHeader(http.StatusTeapot)
+		return errProcess
+	})
+	rec := httptest.NewRecorder()
+	assert.NotPanics(t, func() { h.ServeHTTP(rec, httptest.NewRequest("GET", "/x", nil)) })
+	assert.Equal(t, http.StatusTeapot, rec.Code)
 }

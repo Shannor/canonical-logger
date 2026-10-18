@@ -23,6 +23,13 @@ Currently, the root package `github.com/Shannor/canonical-logger` directly impor
   - `pkg/xlog` is a legacy compatibility shim for the original EventX `xlog` package.
   - Removed in favor of `github.com/Shannor/canonical-logger` and `pkg/clog`.
   - Ensure zero references to `xlog` remain in the core codebase.
+- [x] **Return-Value Result Flow** ([ADR-0002](docs/adr/0002-return-value-result-flow.md)):
+  - Removed `SetResult` / `DeferResult`. Outcomes come only from return values via `Run`, `RunValue`, `HTTPHandler`, and the upgraded `Go` / `Func` / `CronFunc` (`func(ctx) error`).
+- [ ] **Move HTTP Middleware Out of Core into Recipes**:
+  - Migrate `HTTPMiddleware` / `HTTPTraceMiddleware` emission logic to copy-pasteable `net/http` recipes in `docs/adapters.md`, matching the Gin / Echo / gRPC recipes.
+  - Core keeps only the Ports (`NewContext`, `BagFromContext`, `HasGroup`, `HasWarning`, `Message`, `Attrs`, `ExtractTrace`, `Run`).
+  - Result correctness MUST NOT depend on middleware: no status-code interception or outcome reconciliation in emitters.
+  - `clog.HTTPHandler` / `clog.HTTPHandlerFunc` **stay in core** (decided in ADR-0002 §5): they are stdlib-only and record outcomes without emitting.
 
 ---
 
@@ -163,7 +170,7 @@ EventX enforced strict group naming (`actor` with `requestorId`/`isAdmin`/`targe
 
 ## 5. Outcome & Error Model Agnosticism (Beyond Message Mutation)
 
-EventX mutated the canonical message string by appending `-success` or `-failure` (`SetResult(ctx, "checkout", err)` -> `message: "checkout-success"`).
+EventX mutated the canonical message string by appending `-success` or `-failure` (`clog.Run(ctx, "checkout", fn)` -> `message: "checkout-success"`).
 
 - [ ] **Decoupled Outcome Strategies (`OutcomeStrategy`)**:
   - In platforms like Datadog, Honeycomb, and Grafana Loki, modifying the log message causes high cardinality in message values, which degrades message clustering, log pattern detection, and indexing.
@@ -176,7 +183,7 @@ EventX mutated the canonical message string by appending `-success` or `-failure
     - **`StrategyOpenTelemetry`**:
       - Emits `status.code: "OK"` or `status.code: "ERROR"`.
 - [x] **Pluggable Error Extractor / Formatter**:
-  - Currently `SetResult` only records `error: { "err": err.Error() }`.
+  - Previously result recording only captured `error: { "err": err.Error() }`.
   - Provide an `ErrorFormatter` hook to extract rich error metadata:
     ```go
     type ErrorFormatter func(err error) map[string]any

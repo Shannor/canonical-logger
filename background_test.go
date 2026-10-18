@@ -116,20 +116,21 @@ func TestNewBackground_FlushOnceOnly(t *testing.T) {
 
 func TestFunc_EmitsCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		Func("startup-task", func(ctx context.Context) {})
+		Func("startup-task", func(ctx context.Context) error { return nil })
 	})
 
 	require.Len(t, lines, 1)
 	assert.Equal(t, "startup-task", lines[0]["job"])
-	assert.Equal(t, "canonical-log-line", lines[0]["message"])
+	assert.Equal(t, "startup-task-success", lines[0]["message"], "outcome is recorded from fn's return value")
 	assert.NotEmpty(t, lines[0]["latency"])
 }
 
 func TestFunc_ContextHasBag(t *testing.T) {
 	var captured *FieldBag
 	captureBackground(t, func() {
-		Func("bag-func", func(ctx context.Context) {
+		Func("bag-func", func(ctx context.Context) error {
 			captured = BagFromContext(ctx)
+			return nil
 		})
 	})
 	require.NotNil(t, captured, "ctx passed to Func fn must have a FieldBag")
@@ -137,8 +138,9 @@ func TestFunc_ContextHasBag(t *testing.T) {
 
 func TestFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		Func("fields-func", func(ctx context.Context) {
+		Func("fields-func", func(ctx context.Context) error {
 			WithField(ctx, "records_synced", 7)
+			return nil
 		})
 	})
 
@@ -148,8 +150,9 @@ func TestFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
 
 func TestFunc_RunsSynchronously(t *testing.T) {
 	ran := false
-	Func("sync-func", func(ctx context.Context) {
+	Func("sync-func", func(ctx context.Context) error {
 		ran = true
+		return nil
 	})
 	assert.True(t, ran, "Func must run fn before returning")
 }
@@ -157,25 +160,26 @@ func TestFunc_RunsSynchronously(t *testing.T) {
 // --- CronFunc ---
 
 func TestCronFunc_ReturnsCallable(t *testing.T) {
-	fn := CronFunc("cron-job", func(ctx context.Context) {})
+	fn := CronFunc("cron-job", func(ctx context.Context) error { return nil })
 	require.NotNil(t, fn)
 }
 
 func TestCronFunc_EmitsCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		CronFunc("my-cron", func(ctx context.Context) {})()
+		CronFunc("my-cron", func(ctx context.Context) error { return nil })()
 	})
 
 	require.Len(t, lines, 1)
 	assert.Equal(t, "my-cron", lines[0]["job"])
-	assert.Equal(t, "canonical-log-line", lines[0]["message"])
+	assert.Equal(t, "my-cron-success", lines[0]["message"], "outcome is recorded from fn's return value")
 }
 
 func TestCronFunc_ContextHasBag(t *testing.T) {
 	var captured *FieldBag
 	captureBackground(t, func() {
-		CronFunc("bag-cron", func(ctx context.Context) {
+		CronFunc("bag-cron", func(ctx context.Context) error {
 			captured = BagFromContext(ctx)
+			return nil
 		})()
 	})
 	require.NotNil(t, captured, "ctx passed to CronFunc fn must have a FieldBag")
@@ -183,8 +187,9 @@ func TestCronFunc_ContextHasBag(t *testing.T) {
 
 func TestCronFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		CronFunc("fields-cron", func(ctx context.Context) {
+		CronFunc("fields-cron", func(ctx context.Context) error {
 			WithField(ctx, "users_processed", 10)
+			return nil
 		})()
 	})
 
@@ -199,8 +204,9 @@ func TestGo_SpawnsGoroutine(t *testing.T) {
 	wg.Add(1)
 
 	captureBackground(t, func() {
-		Go(context.Background(), "test-go", func(ctx context.Context) {
+		Go(context.Background(), "test-go", func(ctx context.Context) error {
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -212,8 +218,9 @@ func TestGo_EmitsCanonicalLine(t *testing.T) {
 	wg.Add(1)
 
 	lines := captureBackground(t, func() {
-		Go(context.Background(), "go-job", func(ctx context.Context) {
+		Go(context.Background(), "go-job", func(ctx context.Context) error {
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -221,7 +228,7 @@ func TestGo_EmitsCanonicalLine(t *testing.T) {
 
 	require.Len(t, lines, 1)
 	assert.Equal(t, "go-job", lines[0]["job"])
-	assert.Equal(t, "canonical-log-line", lines[0]["message"])
+	assert.Equal(t, "go-job-success", lines[0]["message"], "outcome is recorded from fn's return value")
 	assert.NotEmpty(t, lines[0]["latency"])
 }
 
@@ -231,9 +238,10 @@ func TestGo_ContextHasBag(t *testing.T) {
 	var captured *FieldBag
 
 	captureBackground(t, func() {
-		Go(context.Background(), "bag-go", func(ctx context.Context) {
+		Go(context.Background(), "bag-go", func(ctx context.Context) error {
 			captured = BagFromContext(ctx)
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -249,11 +257,12 @@ func TestGo_ContextNotCancelledWhenParentCancelled(t *testing.T) {
 	var innerErr error
 
 	captureBackground(t, func() {
-		Go(parent, "detach-go", func(ctx context.Context) {
+		Go(parent, "detach-go", func(ctx context.Context) error {
 			cancel()
 			time.Sleep(5 * time.Millisecond)
 			innerErr = ctx.Err()
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -271,8 +280,9 @@ func TestGo_ParentBagSnapshotted(t *testing.T) {
 		WithField(parentCtx, "actor_id", "u1")
 		WithGroupFields(parentCtx, "campaign", map[string]any{"id": "c1"})
 
-		Go(parentCtx, "child-go", func(ctx context.Context) {
+		Go(parentCtx, "child-go", func(ctx context.Context) error {
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -292,8 +302,9 @@ func TestGo_NilParentBag_NoParentGroup(t *testing.T) {
 	wg.Add(1)
 
 	lines := captureBackground(t, func() {
-		Go(context.Background(), "no-parent-go", func(ctx context.Context) {
+		Go(context.Background(), "no-parent-go", func(ctx context.Context) error {
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -310,7 +321,7 @@ func TestGo_RecoversPanic_EmitsErrorLog(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(1)
 
-		Go(context.Background(), "panic-job", func(ctx context.Context) {
+		Go(context.Background(), "panic-job", func(ctx context.Context) error {
 			defer wg.Done()
 			panic("something went wrong")
 		})
@@ -345,7 +356,7 @@ func TestGo_RecoversPanic_SetsResult(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(1)
 
-		Go(context.Background(), "panic-result", func(ctx context.Context) {
+		Go(context.Background(), "panic-result", func(ctx context.Context) error {
 			defer wg.Done()
 			panic("bad data")
 		})
@@ -411,9 +422,10 @@ func TestGo_InheritsParentContextLogger(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	Go(parentCtx, "inherited-logger-job", func(ctx context.Context) {
+	Go(parentCtx, "inherited-logger-job", func(ctx context.Context) error {
 		defer wg.Done()
 		WithField(ctx, "worker_step", "done")
+		return nil
 	})
 	wg.Wait()
 	goWait()
@@ -435,11 +447,12 @@ func TestGo_PreservesParentContextValuesWithoutCancel(t *testing.T) {
 	var gotErr error
 
 	captureBackground(t, func() {
-		Go(parent, "ctx-val-job", func(ctx context.Context) {
+		Go(parent, "ctx-val-job", func(ctx context.Context) error {
 			cancel()
 			gotVal = ctx.Value(customCtxKey{})
 			gotErr = ctx.Err()
 			wg.Done()
+			return nil
 		})
 		wg.Wait()
 		goWait()
@@ -453,9 +466,10 @@ func TestFunc_LoggerUpdatedInsideFn(t *testing.T) {
 	w := &syncWriter{}
 	customLogger := slog.New(NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	Func("custom-logger-func", func(ctx context.Context) {
+	Func("custom-logger-func", func(ctx context.Context) error {
 		NewContextWithLogger(ctx, customLogger)
 		WithField(ctx, "migrated", true)
+		return nil
 	})
 
 	var line map[string]any

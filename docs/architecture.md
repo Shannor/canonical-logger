@@ -13,7 +13,7 @@ github.com/Shannor/canonical-logger (Pure Go Standard Library)
 ├── clog.go                 # Extended log levels, SamplingHandler, SampleEvaluator, NewJSONHandler, GCPReplaceAttr
 ├── console_handler.go      # Colorized human-readable ConsoleHandler for local development
 ├── fieldbag.go             # Thread-safe FieldBag, ContextResolver port, WithField(s)/WithAttrs helpers
-├── result.go               # SetResult, DeferResult, pluggable ErrorFormatter & DefaultErrorFormatter
+├── result.go               # Run, RunValue, HTTPHandler (return-value results), pluggable ErrorFormatter & DefaultErrorFormatter
 ├── background.go           # Detached goroutines (Go), sync tasks (Func), scheduled jobs (CronFunc)
 ├── middleware.go           # Standard net/http HTTPMiddleware
 ├── trace.go                # HTTPTraceMiddleware & exported ExtractTrace port
@@ -57,4 +57,4 @@ Custom router and RPC middlewares (Gin, Echo, Fiber, gRPC, message consumers) in
 
 ### Port 4: `ErrorFormatter` & `SetErrorFormatter`
 
-Boundary layers call `clog.SetResult(ctx, "event-name", err)` or `defer clog.DeferResult(ctx, "event-name", &err)`. When `err != nil`, `clog` invokes the configured `ErrorFormatter` (`DefaultErrorFormatter` by default) to populate the `"error"` group with `"err"`, unwrapped root `"cause"`, `"code"`, `"category"`, and `ErrorFields()`.
+Boundary layers wrap their work in `clog.Run(ctx, "event-name", fn)` (or `RunValue`, `HTTPHandler`, `Go`, `Func`, `CronFunc`, all built on `Run`). The outcome is derived from `fn`'s **returned error**, never from a captured variable (see ADR-0002). When the returned error is non-nil, `clog` invokes the configured `ErrorFormatter` (`DefaultErrorFormatter` by default) to populate the `"error"` group with `"err"`, unwrapped root `"cause"`, `"code"`, `"category"`, and `ErrorFields()`.

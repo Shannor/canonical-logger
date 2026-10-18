@@ -61,7 +61,19 @@ type FieldBag struct {
 	groups  Groups
 	message string
 	logger  *slog.Logger
+
+	// outcome tracks the boundary result recorded by Run so failures are sticky.
+	outcome outcome
 }
+
+// outcome is the boundary result recorded on a FieldBag.
+type outcome uint8
+
+const (
+	outcomeUnset outcome = iota
+	outcomeSuccess
+	outcomeFailure
+)
 
 func (b *FieldBag) setLogger(l *slog.Logger) {
 	if b == nil {

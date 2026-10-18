@@ -20,7 +20,8 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 - **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getOrder", "rows", 1)`).
 - **Strongly-Typed `slog.Attr` & `LogValuer` Support**: Fast-path `WithAttrs` and `WithGroupAttrs` helpers plus automatic `slog.LogValuer` evaluation for custom type serialization and PII redaction.
 - **Standard `net/http` Middlewares**: Built-in `HTTPMiddleware` and `HTTPTraceMiddleware` compatible with Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux, and any `http.Handler`.
-- **Rich Boundary Error Tracking**: `SetResult` and `DeferResult` automatically record error details, unwrap root causes, extract `Code()` / `Category()` / `ErrorFields()` metadata via pluggable `ErrorFormatter`, and format outcome messages (`<event>-success`, `<event>-failure`).
+- **Shadow-Proof Result Tracking**: Outcomes are derived from return values via `clog.Run`, `clog.RunValue`, `clog.HTTPHandler`, `clog.Go`, `clog.Func`, and `clog.CronFunc`, so `:=` shadowing can never log a false success. Failures are sticky.
+- **Rich Boundary Error Tracking**: Failures automatically record error details, unwrap root causes, extract `Code()` / `Category()` / `ErrorFields()` metadata via pluggable `ErrorFormatter`, and format outcome messages (`<event>-success`, `<event>-failure`).
 - **Async & Background Support**:
   - `clog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, logger propagation, and parent `FieldBag` correlation.
   - `clog.Func`: Synchronous tasks with automatic latency and line emission.
@@ -55,7 +56,7 @@ Canonical logging relies on a clear separation of concerns across application la
 | Layer | Functions Permitted | Group Name | Purpose & Invariants |
 | --- | --- | --- | --- |
 | **Middleware** | `clog.HTTPMiddleware`, `clog.HTTPTraceMiddleware`, Custom router/Auth middlewares | `actor` / root | Emits HTTP root fields (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
-| **Boundary (API / Webhooks)** | `SetResult()`, `DeferResult()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the canonical event name (`-success` / `-failure`), adds request input parameters & query filters (`request`). |
+| **Boundary (API / Webhooks)** | `HTTPHandler()`, `Run()`, `RunValue()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the canonical event name (`-success` / `-failure`), adds request input parameters & query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. **MUST NOT** set event names or touch the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). **MUST NOT** set event names or touch `"error"`. Returns standard Go errors. |
 | **Background / Cron** | `clog.Go()`, `clog.CronFunc()`, `clog.Func()` | `job` / `request` | Spawns isolated execution contexts with independent FieldBags, correlates with parent snapshots, and recovers from panics. |
@@ -72,7 +73,7 @@ Structured log engines (such as GCP Cloud Logging, Datadog, and Elasticsearch) q
 - **API Handlers**: Group MUST be `request` (e.g. `orderId`, `limit`, `offset`, `filters`).
 - **Service Layer**: Group MUST follow `<serviceName>.<methodName>` (e.g. `orderService.checkout`, `paymentService.charge`).
 - **DAO / DB Layer**: Group MUST follow `<daoName>.<methodName>` or `db.<methodName>` (e.g. `orderDAO.getByID`, `db.queryOrders`).
-- **Error Group**: Group MUST be `error`. Populated **automatically** by `SetResult` / `DeferResult` on failure.
+- **Error Group**: Group MUST be `error`. Populated **automatically** when a `Run`-based wrapper returns an error.
 
 ### Field Naming Rules
 
@@ -141,18 +142,16 @@ Here is how context accumulates cleanly across the application layers without pa
 
 ### 1. HTTP Handler (Boundary Layer)
 
-The handler uses `defer clog.DeferResult` to capture the final outcome and tags the `request` group with input parameters:
+The handler is wrapped with `clog.HTTPHandler`, which records the returned error as the outcome, and tags the `request` group with input parameters:
 
 ```go
-func (api OrderAPI) Checkout(w http.ResponseWriter, r *http.Request) {
+func (api OrderAPI) Checkout(w http.ResponseWriter, r *http.Request) error {
     ctx := r.Context()
-    var err error
-    defer clog.DeferResult(ctx, "checkout-order", &err)
 
     var req CheckoutRequest
-    if err = json.NewDecoder(r.Body).Decode(&req); err != nil {
+    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
         http.Error(w, err.Error(), http.StatusBadRequest)
-        return
+        return err
     }
 
     // Enrich request group
@@ -162,16 +161,18 @@ func (api OrderAPI) Checkout(w http.ResponseWriter, r *http.Request) {
         "itemCount": len(req.Items),
     })
 
-    var order *models.Order
-    order, err = api.orderService.Checkout(ctx, req)
+    order, err := api.orderService.Checkout(ctx, req)
     if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
+        http.Error(w, "internal error", http.StatusInternalServerError)
+        return err
     }
 
     w.Header().Set("Content-Type", "application/json")
-    _ = json.NewEncoder(w).Encode(order)
+    return json.NewEncoder(w).Encode(order)
 }
+
+// Registration:
+mux.Handle("POST /checkout", clog.HTTPHandler("checkout-order", api.Checkout))
 ```
 
 ### 2. Service Layer (Business Execution)
@@ -228,11 +229,11 @@ func (d orderDAO) CreateOrder(ctx context.Context, req CheckoutRequest) (*models
 
 ---
 
-## Result Tracking, Error Formatting & The Shadowing Gotcha
+## Result Tracking & Error Formatting
 
-### How `SetResult` and `DeferResult` Work
+### How Results Are Recorded
 
-Boundary layers call `SetResult` or `DeferResult` with the base event name:
+Boundary layers wrap their work in `clog.Run` (or a wrapper built on it: `HTTPHandler`, `RunValue`, `Go`, `Func`, `CronFunc`). The **returned error** determines the outcome:
 - On success (`err == nil`): The message is set to `"<event>-success"`.
 - On failure (`err != nil`): The message is set to `"<event>-failure"`, the canonical log escalates to `ERROR` level, and the `"error"` group is populated via `DefaultErrorFormatter` (or a custom `ErrorFormatter` configured with `clog.SetErrorFormatter`).
 
@@ -255,45 +256,63 @@ clog.SetErrorFormatter(func(err error) clog.Fields {
 })
 ```
 
-### ⚠️ Warning: The Error Shadowing Gotcha
+### Result Wrappers
 
-When using `defer clog.DeferResult(ctx, "my-operation", &err)`, the deferred call evaluates the pointer `&err` at function return. **If you shadow `err` inside an `if`, `for`, or `switch` block with `:=`, the outer `err` remains `nil`, causing the log to falsely report success!**
+There is no `SetResult` / `DeferResult`: an outcome can only come from a function's **return value**, never from a captured `err` variable. A `:=` that shadows `err` therefore can't produce a false success (see [ADR-0002](docs/adr/0002-return-value-result-flow.md)).
+
+| Boundary | Use |
+| --- | --- |
+| `net/http`, ServeMux, Chi | `clog.HTTPHandler("event", func(w, r) error)` |
+| Gin / Echo / webhook / consumer | `err := clog.Run(ctx, "event", func(ctx) error)` |
+| gRPC / RPC returning a value | `return clog.RunValue(ctx, "event", func(ctx) (T, error))` |
+| Goroutine / startup task / cron | `clog.Go`, `clog.Func`, `clog.CronFunc` (the task name is the event name) |
 
 ```go
-// ❌ WRONG: := in a nested block shadows the outer 'err'
-func (api API) Handle(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
-    var err error
-    defer clog.DeferResult(ctx, "handle-action", &err)
-
+// net/http: the returned error IS the result.
+mux.Handle("POST /actions", clog.HTTPHandler("handle-action", func(w http.ResponseWriter, r *http.Request) error {
     if condition {
-        // := creates a new local 'err' scoped only to this if block!
-        data, err := api.service.Process(ctx)
+        data, err := api.service.Process(r.Context()) // := is harmless
         if err != nil {
-            http.Error(w, err.Error(), http.StatusInternalServerError)
-            return // BUG: outer 'err' is still nil -> logs "handle-action-success"!
+            http.Error(w, "internal error", http.StatusInternalServerError)
+            return err // -> handle-action-failure
         }
-        _ = data
+        return json.NewEncoder(w).Encode(data)
     }
+    return nil
+}))
+
+// Gin (or any framework): wrap the body with clog.Run.
+func (api API) Create(c *gin.Context) {
+    _ = clog.Run(c.Request.Context(), "create-campaign", func(ctx context.Context) error {
+        var req CreateCampaignRequest
+        if err := c.ShouldBindJSON(&req); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+            return err
+        }
+        campaign, err := api.campaignService.Create(ctx, req)
+        if err != nil {
+            c.JSON(http.StatusInternalServerError, gin.H{"error": "internal error"})
+            return err
+        }
+        c.JSON(http.StatusOK, campaign)
+        return nil
+    })
 }
 
-// ✅ CORRECT: Assign to the outer 'err' using '='
-func (api API) Handle(w http.ResponseWriter, r *http.Request) {
-    ctx := r.Context()
-    var err error
-    defer clog.DeferResult(ctx, "handle-action", &err)
-
-    if condition {
-        var data *Data
-        data, err = api.service.Process(ctx) // Reuses the outer 'err'
-        if err != nil {
-            http.Error(w, err.Error(), http.StatusInternalServerError)
-            return // Correctly logs "handle-action-failure" with error group!
-        }
-        _ = data
-    }
+// gRPC: RunValue passes the value and error straight through.
+func (s Server) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, error) {
+    return clog.RunValue(ctx, "get-user", func(ctx context.Context) (*pb.User, error) {
+        return s.users.Get(ctx, req.GetId())
+    })
 }
 ```
+
+**Semantics:**
+- **Return value is the outcome**: `nil` -> `<event>-success`; non-nil -> `<event>-failure` + `"error"` group + `ERROR` level.
+- **Panics**: recorded as `<event>-failure`, then re-panicked so upstream recovery is unchanged (`clog.Go` recovers them).
+- **Sticky failure**: once a failure is recorded (by a nested `Run`) or an `"error"` group is attached (e.g. by a router adapter), a later `nil` result does not downgrade the line to `-success`.
+- **Nesting**: the outermost wrapper owns the event name.
+- **Handlers write their own responses**: `clog.HTTPHandler` only records the outcome. Returning an error without writing a response still sends HTTP 200.
 
 ---
 
@@ -317,15 +336,12 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		var err error
-		defer clog.DeferResult(ctx, "get-user", &err)
-
-		clog.WithGroupField(ctx, "request", "userId", r.PathValue("id"))
+	mux.Handle("GET /users/{id}", clog.HTTPHandler("get-user", func(w http.ResponseWriter, r *http.Request) error {
+		clog.WithGroupField(r.Context(), "request", "userId", r.PathValue("id"))
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
-	})
+		_, err := w.Write([]byte(`{"status":"ok"}`))
+		return err
+	}))
 
 	// Wrap handler with clog HTTPMiddleware and HTTPTraceMiddleware
 	handler := clog.HTTPMiddleware(clog.HTTPTraceMiddleware(mux))
@@ -461,11 +477,8 @@ Spawns a goroutine decoupled from the parent context's cancellation (`context.Wi
 - Panic recovery logging with automatic stack error capture and canonical flush.
 
 ```go
-clog.Go(ctx, "send-welcome-email", func(bgCtx context.Context) {
-    var err error
-    defer clog.DeferResult(bgCtx, "send-welcome-email", &err)
-
-    err = emailService.Send(bgCtx, userID)
+clog.Go(ctx, "send-welcome-email", func(bgCtx context.Context) error {
+    return emailService.Send(bgCtx, userID) // -> send-welcome-email-success / -failure
 })
 ```
 
@@ -474,12 +487,9 @@ clog.Go(ctx, "send-welcome-email", func(bgCtx context.Context) {
 Runs a synchronous block with its own canonical logging context:
 
 ```go
-clog.Func("startup-migrations", func(ctx context.Context) {
-    var err error
-    defer clog.DeferResult(ctx, "startup-migrations", &err)
-
-    err = runMigrations(ctx)
-})
+if err := clog.Func("startup-migrations", runMigrations); err != nil {
+    os.Exit(1)
+}
 ```
 
 ### `clog.CronFunc`: Scheduled Job
@@ -488,12 +498,7 @@ Wraps a function for use with cron job schedulers (such as `robfig/cron`):
 
 ```go
 c := cron.New()
-c.AddFunc("@hourly", clog.CronFunc("sync-subscriptions", func(ctx context.Context) {
-    var err error
-    defer clog.DeferResult(ctx, "sync-subscriptions", &err)
-
-    err = syncService.Sync(ctx)
-}))
+c.AddFunc("@hourly", clog.CronFunc("sync-subscriptions", syncService.Sync))
 ```
 
 ---

@@ -3,7 +3,9 @@ package clog
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
+	"net/http"
 	"sync"
 )
 
@@ -15,7 +17,7 @@ var (
 	errorFormatter   ErrorFormatter = DefaultErrorFormatter
 )
 
-// SetErrorFormatter configures a custom ErrorFormatter used by SetResult and DeferResult.
+// SetErrorFormatter configures the ErrorFormatter used when Run records a failure.
 // Passing nil restores DefaultErrorFormatter.
 func SetErrorFormatter(fn ErrorFormatter) {
 	errorFormatterMu.Lock()
@@ -82,45 +84,139 @@ func unwrapRootCause(err error) error {
 	}
 }
 
-// SetResult sets the canonical log line event name with a -success or -failure suffix based on err.
-// Use at boundary layers: API handlers, background jobs, cron jobs.
-// If err is non-nil and no "error" group exists yet, populates the "error" group using the active ErrorFormatter.
-func SetResult(ctx context.Context, baseEvent string, err error) context.Context {
-	bag := BagFromContext(ctx)
-	if bag == nil {
-		return ctx
-	}
-	if err != nil {
-		if !bag.hasGroup("error") {
-			formatter := getErrorFormatter()
-			if fields := formatter(err); len(fields) > 0 {
-				bag.setGroupMany("error", fields)
-			} else {
-				bag.setGroup("error", "err", err.Error())
-			}
+// Run executes fn as a boundary operation and records its returned error as the
+// outcome of the canonical log line:
+//
+//   - fn returns nil:     message becomes "<baseEvent>-success".
+//   - fn returns an error: message becomes "<baseEvent>-failure", the line escalates to
+//     ERROR, and the "error" group is populated via the active ErrorFormatter.
+//
+// Run is the single primitive for recording outcomes. Because the outcome is taken from
+// fn's return value rather than from a captured variable, := shadowing inside fn cannot
+// produce a false success. Use it at boundary layers only (API handlers, webhooks,
+// consumers, RPC handlers); Go, Func, CronFunc and HTTPHandler are built on it.
+//
+// Failure is sticky: if a failure was already recorded on the bag (e.g. by a nested Run)
+// or an "error" group was attached (e.g. by a router adapter), a nil result does not
+// downgrade the line to "-success". When Runs are nested, the outermost Run owns the
+// event name.
+//
+// If fn panics, the panic is recorded as a failure and then re-panicked so upstream
+// recovery (http.Server, Go, cron schedulers) behaves as before.
+//
+//	func (api API) Create(c *gin.Context) {
+//		_ = clog.Run(c.Request.Context(), "create-campaign", func(ctx context.Context) error {
+//			req, err := bind(c) // shadowing is harmless
+//			if err != nil {
+//				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+//				return err
+//			}
+//			return api.svc.Create(ctx, req)
+//		})
+//	}
+func Run(ctx context.Context, baseEvent string, fn func(ctx context.Context) error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			recordResult(ctx, baseEvent, panicError(baseEvent, r))
+			panic(r)
 		}
-		bag.setMessage(baseEvent + "-failure")
-		return ctx
-	}
-	bag.setMessage(baseEvent + "-success")
-	return ctx
+		recordResult(ctx, baseEvent, err)
+	}()
+	return fn(ctx)
 }
 
-// DeferResult is the defer-friendly form of SetResult. It reads *err at the time the
-// deferred call runs (function return), not when the defer statement is registered, so it
-// captures the final error value.
+// RunValue is the value-returning form of Run, convenient for RPC handlers:
 //
-// Usage:
-//
-//	func (a API) GetCampaign(ctx context.Context, ...) (..., error) {
-//		var err error
-//		defer clog.DeferResult(ctx, "get-campaign", &err)
-//		...
+//	func (s Server) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, error) {
+//		return clog.RunValue(ctx, "get-user", func(ctx context.Context) (*pb.User, error) {
+//			return s.users.Get(ctx, req.GetId())
+//		})
 //	}
-func DeferResult(ctx context.Context, baseEvent string, err *error) {
-	var e error
-	if err != nil {
-		e = *err
+func RunValue[T any](ctx context.Context, baseEvent string, fn func(ctx context.Context) (T, error)) (T, error) {
+	var v T
+	err := Run(ctx, baseEvent, func(ctx context.Context) error {
+		var err error
+		v, err = fn(ctx)
+		return err
+	})
+	return v, err
+}
+
+// HTTPHandlerFunc is an HTTP handler that returns its outcome as an error (the
+// "appHandler" pattern from https://go.dev/blog/error-handling-and-go).
+// The handler is still responsible for writing the HTTP response.
+type HTTPHandlerFunc func(w http.ResponseWriter, r *http.Request) error
+
+// HTTPHandler adapts an error-returning HTTPHandlerFunc into an http.Handler that records the
+// returned error as the canonical outcome for baseEvent (via Run).
+//
+//	mux.Handle("POST /campaigns", clog.HTTPHandler("create-campaign", func(w http.ResponseWriter, r *http.Request) error {
+//		data, err := api.service.Process(r.Context()) // shadowing is harmless
+//		if err != nil {
+//			http.Error(w, "internal error", http.StatusInternalServerError)
+//			return err // recorded as create-campaign-failure
+//		}
+//		return json.NewEncoder(w).Encode(data)
+//	}))
+func HTTPHandler(baseEvent string, fn HTTPHandlerFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = Run(r.Context(), baseEvent, func(context.Context) error {
+			return fn(w, r)
+		})
+	})
+}
+
+// recordResult applies an outcome to the bag in ctx. It is the internal implementation
+// behind Run; it is intentionally unexported so outcomes can only be derived from return
+// values.
+func recordResult(ctx context.Context, baseEvent string, err error) {
+	bag := BagFromContext(ctx)
+	if bag == nil {
+		return
 	}
-	SetResult(ctx, baseEvent, e)
+	var fields Fields
+	if err != nil {
+		// Run the (user-supplied) formatter outside the bag lock.
+		fields = getErrorFormatter()(err)
+		if len(fields) == 0 {
+			fields = Fields{"err": err.Error()}
+		}
+	}
+	bag.setResult(baseEvent, err != nil, fields)
+}
+
+// setResult atomically applies an outcome to the bag. errFields is only applied when
+// failed is true and no "error" group exists yet.
+func (b *FieldBag) setResult(baseEvent string, failed bool, errFields Fields) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	_, hasErrGroup := b.groups["error"]
+	if failed {
+		if !hasErrGroup && len(errFields) > 0 {
+			maps.Copy(b.ensurePath("error"), errFields)
+		}
+		b.outcome = outcomeFailure
+		b.message = baseEvent + "-failure"
+		return
+	}
+
+	// Sticky failure: never downgrade a recorded failure (or an attached error group).
+	if b.outcome == outcomeFailure {
+		return
+	}
+	if hasErrGroup {
+		b.outcome = outcomeFailure
+		b.message = baseEvent + "-failure"
+		return
+	}
+	b.outcome = outcomeSuccess
+	b.message = baseEvent + "-success"
+}
+
+func panicError(name string, r any) error {
+	if e, ok := r.(error); ok {
+		return fmt.Errorf("panic in %q: %w", name, e)
+	}
+	return fmt.Errorf("panic in %q: %v", name, r)
 }
