@@ -355,7 +355,7 @@ To keep `canonical-logger` 100% dependency-free, third-party router middlewares 
 
 See **[Building Custom Adapters, Middlewares & Writers (`docs/adapters.md`)](docs/adapters.md)** for ready-to-copy recipes for:
 - **Gin** (`CanonicalLogger` middleware, `TraceID`, sensitive route parameter masking, and `gin.ContextKey` resolver)
-- **OpenAPI `oapi-codegen/gin-middleware`** (`ContextResolver`)
+- **OpenAPI `oapi-codegen`** (strict-server middleware that records every operation's outcome by operationId, plus request validation/binding error hooks, and a `ContextResolver` for `gin-middleware`)
 - **gRPC** (`UnaryServerInterceptor`)
 - **Google Cloud Logging SDK** (`GCPWriter`)
 
