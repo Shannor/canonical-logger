@@ -66,26 +66,21 @@ func extractTrace(sentryTrace, baggage string) (traceID, spanID string) {
 // parseSentryTrace parses the sentry-trace header format: <trace_id>-<span_id>[-<sampled>]
 // Returns empty strings if the format is invalid.
 func parseSentryTrace(header string) (traceID, spanID string) {
-	parts := strings.SplitN(header, "-", 3)
-	if len(parts) < 2 {
+	traceID, rest, found := strings.Cut(header, "-")
+	if !found || len(traceID) != 32 {
 		return "", ""
 	}
-
-	traceID = parts[0]
-	spanID = parts[1]
-
-	// Basic validation: trace ID should be a 32-char hex string
-	if len(traceID) != 32 {
-		return "", ""
-	}
-
+	spanID, _, _ = strings.Cut(rest, "-")
 	return traceID, spanID
 }
 
 // parseTraceIDFromBaggage extracts sentry-trace_id from a W3C baggage header.
 // Baggage format: key1=value1,key2=value2,...
 func parseTraceIDFromBaggage(baggage string) string {
-	for _, pair := range strings.Split(baggage, ",") {
+	rest := baggage
+	for rest != "" {
+		var pair string
+		pair, rest, _ = strings.Cut(rest, ",")
 		pair = strings.TrimSpace(pair)
 		key, value, found := strings.Cut(pair, "=")
 		if found && key == "sentry-trace_id" {

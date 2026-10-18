@@ -88,29 +88,29 @@ func (b *FieldBag) ensurePath(path string) Groups {
 		b.groups = make(Groups)
 	}
 
-	parts := strings.Split(path, ".")
-	if len(parts) > maxGroupDepth {
-		parts = parts[:maxGroupDepth]
-	}
-
 	current := b.groups
-	for _, part := range parts {
-		if part == "" {
-			continue
-		}
-		if existing, ok := current[part]; ok {
-			if m, ok := existing.(Groups); ok {
-				current = m
+	rest := path
+	for depth := 0; depth < maxGroupDepth; depth++ {
+		part, after, found := strings.Cut(rest, ".")
+		if part != "" {
+			if existing, ok := current[part]; ok {
+				if m, ok := existing.(Groups); ok {
+					current = m
+				} else {
+					next := make(Groups)
+					current[part] = next
+					current = next
+				}
 			} else {
 				next := make(Groups)
 				current[part] = next
 				current = next
 			}
-		} else {
-			next := make(Groups)
-			current[part] = next
-			current = next
 		}
+		if !found {
+			break
+		}
+		rest = after
 	}
 	return current
 }
@@ -251,6 +251,26 @@ func (b *FieldBag) Attrs() []slog.Attr {
 	defer b.mu.Unlock()
 
 	attrs := make([]slog.Attr, 0, len(b.root)+len(b.groups))
+	return b.appendAttrsLocked(attrs)
+}
+
+func (b *FieldBag) appendAttrs(prefix []slog.Attr) []slog.Attr {
+	if b == nil {
+		return prefix
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	needed := len(b.root) + len(b.groups)
+	if needed == 0 {
+		return prefix
+	}
+	out := make([]slog.Attr, len(prefix), len(prefix)+needed)
+	copy(out, prefix)
+	return b.appendAttrsLocked(out)
+}
+
+func (b *FieldBag) appendAttrsLocked(attrs []slog.Attr) []slog.Attr {
 	for k, v := range b.root {
 		attrs = append(attrs, toSlogAttr(k, v))
 	}
@@ -368,7 +388,7 @@ func WithAttrs(ctx context.Context, attrs ...slog.Attr) context.Context {
 	}
 	for _, a := range attrs {
 		if a.Key != "" {
-			bag.root[a.Key] = a
+			bag.root[a.Key] = a.Value
 		}
 	}
 	return ctx
@@ -408,7 +428,7 @@ func WithGroupAttrs(ctx context.Context, group string, attrs ...slog.Attr) conte
 	target := bag.ensurePath(group)
 	for _, a := range attrs {
 		if a.Key != "" {
-			target[a.Key] = a
+			target[a.Key] = a.Value
 		}
 	}
 	return ctx
@@ -435,21 +455,25 @@ func (b *FieldBag) getGroup(name string) Groups {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	parts := strings.Split(name, ".")
 	current := b.groups
-	for _, part := range parts {
-		if part == "" {
-			continue
+	rest := name
+	for {
+		part, after, found := strings.Cut(rest, ".")
+		if part != "" {
+			v, ok := current[part]
+			if !ok {
+				return nil
+			}
+			m, ok := v.(Groups)
+			if !ok {
+				return nil
+			}
+			current = m
 		}
-		v, ok := current[part]
-		if !ok {
-			return nil
+		if !found {
+			break
 		}
-		m, ok := v.(Groups)
-		if !ok {
-			return nil
-		}
-		current = m
+		rest = after
 	}
 	return deepCopyMap(current)
 }
@@ -463,7 +487,7 @@ func (b *FieldBag) snapshot() Root {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	out := make(Root)
+	out := make(Root, len(b.root)+len(b.groups))
 	maps.Copy(out, b.root)
 	for groupName, groupValue := range b.groups {
 		if m, ok := groupValue.(Groups); ok {
@@ -485,21 +509,25 @@ func (b *FieldBag) HasGroup(name string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	parts := strings.Split(name, ".")
 	current := b.groups
-	for _, part := range parts {
-		if part == "" {
-			continue
+	rest := name
+	for {
+		part, after, found := strings.Cut(rest, ".")
+		if part != "" {
+			v, ok := current[part]
+			if !ok {
+				return false
+			}
+			if m, ok := v.(Groups); ok {
+				current = m
+			} else {
+				return true
+			}
 		}
-		v, ok := current[part]
-		if !ok {
-			return false
+		if !found {
+			break
 		}
-		if m, ok := v.(Groups); ok {
-			current = m
-		} else {
-			return true
-		}
+		rest = after
 	}
 	return true
 }

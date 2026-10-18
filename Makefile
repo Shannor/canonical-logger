@@ -1,10 +1,13 @@
-.PHONY: help test tidy tag push-tag release
+.PHONY: help test bench tidy tag push-tag release
 
 help: ## Show available make targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 test: ## Run all unit tests with race detector
 	go test -race ./...
+
+bench: ## Run benchmarks with memory allocation metrics
+	go test -run=^$$ -bench=. -benchmem ./...
 
 tidy: ## Run go mod tidy
 	go mod tidy

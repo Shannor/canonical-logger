@@ -53,8 +53,8 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 
 		clientIP := r.RemoteAddr
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			parts := strings.Split(xff, ",")
-			clientIP = strings.TrimSpace(parts[0])
+			first, _, _ := strings.Cut(xff, ",")
+			clientIP = strings.TrimSpace(first)
 		} else if xri := r.Header.Get("X-Real-IP"); xri != "" {
 			clientIP = strings.TrimSpace(xri)
 		}
@@ -64,7 +64,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			path += "?" + r.URL.RawQuery
 		}
 
-		attrs := []slog.Attr{
+		baseAttrs := [6]slog.Attr{
 			slog.Int("status", rw.statusCode),
 			slog.String("method", r.Method),
 			slog.String("path", path),
@@ -72,7 +72,7 @@ func HTTPMiddleware(next http.Handler) http.Handler {
 			slog.String("latency", stop.String()),
 			slog.String("user-agent", r.UserAgent()),
 		}
-		attrs = append(attrs, bag.Attrs()...)
+		attrs := bag.appendAttrs(baseAttrs[:])
 
 		logger.LogAttrs(r.Context(), level, bag.Message(), attrs...)
 	})
