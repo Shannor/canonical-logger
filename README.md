@@ -6,7 +6,7 @@
 
 Structured canonical logging for Go, built on Go's standard library **`log/slog`**.
 
-`canonical-logger` (`clog`) implements the **Canonical Log Line** pattern (pioneered by Stripe): emitting exactly **one rich, structured log line** per HTTP request or background task lifecycle. Rather than scattering noisy, disjointed log lines across handlers, services, and database layers, contextual metadata is accumulated in a thread-safe `FieldBag` across the execution lifecycle and emitted as a single structured JSON event.
+`canonical-logger` (`clog`) implements the **Canonical Log Line / Wide Event** pattern (pioneered by Stripe and Honeycomb): emitting exactly **one rich, structured wide event per Unit of Work** (an HTTP request, RPC call, consumed message, or background job). Rather than scattering noisy, disjointed `log.Info()` side effects across handlers, services, and database layers, each unit of work opens an isolated `FieldBag` on `context.Context`, accumulates domain and operational metadata as execution traverses the stack, records its outcome (`<event>-success` vs `<event>-failure`) from the boundary function's returned `error`, and flushes a single structured JSON event when the boundary exits.
 
 For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for strict architectural rules, layer boundaries, and linting checklists.
 
@@ -20,7 +20,7 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 - **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getOrder", "rows", 1)`).
 - **Strongly-Typed `slog.Attr` & `LogValuer` Support**: Fast-path `WithAttrs` and `WithGroupAttrs` helpers plus automatic `slog.LogValuer` evaluation for custom type serialization and PII redaction.
 - **Standard `net/http` Middlewares**: Built-in `HTTPMiddleware` and `HTTPTraceMiddleware` compatible with Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux, and any `http.Handler`.
-- **Shadow-Proof Result Tracking**: Outcomes are derived from return values via `clog.Run`, `clog.RunValue`, `clog.HTTPHandler`, `clog.Go`, `clog.Func`, and `clog.CronFunc`, so `:=` shadowing can never log a false success. Failures are sticky.
+- **Shadow-Proof Unit-of-Work Result Tracking**: Outcomes are derived from return values via `clog.Run`, `clog.RunValue`, `clog.HTTPHandler`, `clog.Go`, `clog.Func`, and `clog.CronFunc`—ergonomically shaped like `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`. Returning `nil` records `<event>-success`; returning an error or panicking records `<event>-failure` while preserving every field accumulated before the error, so `:=` shadowing can never log a false success. Failures are sticky.
 - **Rich Boundary Error Tracking**: Failures automatically record error details, unwrap root causes, extract `Code()` / `Category()` / `ErrorFields()` metadata via pluggable `ErrorFormatter`, and format outcome messages (`<event>-success`, `<event>-failure`).
 - **Async & Background Support**:
   - `clog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, logger propagation, and parent `FieldBag` correlation.
@@ -50,6 +50,29 @@ import "github.com/Shannor/canonical-logger/pkg/clog"
 ---
 
 ## Architectural Principles & Layer Responsibilities
+
+### One Wide Event per Unit of Work
+
+`clog` scopes every canonical log line to a single **Unit of Work** across four phases:
+
+1. **Open Unit of Work (`NewContext`)**: Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a background runner (`Go`, `Func`, `CronFunc`) attaches a fresh, thread-safe `FieldBag` to `context.Context`.
+2. **Accumulate (`WithGroupFields` / `WithAttrs`)**: Handlers, services, and DAOs enrich their respective namespace groups as work progresses, without emitting premature log lines or passing logger instances.
+3. **Record Outcome (`Run` / `RunValue` / `HTTPHandler`)**: The boundary wrapper captures the function's returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure`, extracts structured error details via `ErrorFormatter`, and marks the failure as sticky so outer wrappers cannot downgrade it—all while preserving every field accumulated before the failure.
+4. **Emit (`LogAttrs` at Boundary Exit)**: When the outermost middleware or task runner finishes, it inspects the finalized `FieldBag` and emits one canonical wide event.
+
+### When to Use `clog` vs. Standard `log/slog`
+
+`clog` intentionally does **not** expose point-logging functions like `clog.Info()` or `clog.Error()`. Omitting ad-hoc emit helpers ensures services and DAOs cannot accidentally drift back into scattering multiple log lines per request.
+
+Instead, choose the right tool based on whether you are inside a **Unit of Work**:
+
+| Scenario | Example | What to Use |
+| :--- | :--- | :--- |
+| **1. Process lifecycle event** (no Unit of Work) | `"server listening on :8080"`, `"SIGTERM received, draining"`, `"loaded config"` | **Use standard `slog.Info` / `slog.Error` directly.** Because `slog.SetDefault` is configured with `clog.NewJSONHandler` or `clog.NewConsoleHandler` at startup, standalone `slog` calls automatically share the same JSON schema (`"message"`, `"severity"`) and console formatting. |
+| **2. One-off synchronous operation** | Running DB migrations at startup, seeding data, or executing a CLI command | **Use `clog.Func("run-migrations", func(ctx) error { ... })`.** Emits one self-contained wide event with `latency`, `-success` / `-failure`, and any fields enriched by downstream DAOs/services. |
+| **3. Inside an active request or task** | `"cache miss"`, `"rate limit near threshold"`, `"retrying provider"` | **Do not emit a separate log line.** Enrich the active Unit of Work via `clog.WithGroupField(ctx, "billingService.charge", "cacheHit", false)` (or add a `"warning"` field to escalate the wide event to `WARN`). |
+
+### Layer Ownership
 
 Canonical logging relies on a clear separation of concerns across application layers. Each layer has specific responsibilities for what it enriches:
 
@@ -233,9 +256,9 @@ func (d orderDAO) CreateOrder(ctx context.Context, req CheckoutRequest) (*models
 
 ### How Results Are Recorded
 
-Boundary layers wrap their work in `clog.Run` (or a wrapper built on it: `HTTPHandler`, `RunValue`, `Go`, `Func`, `CronFunc`). The **returned error** determines the outcome:
+Boundary layers wrap their unit of work in `clog.Run` (or a wrapper built on it: `HTTPHandler`, `RunValue`, `Go`, `Func`, `CronFunc`). The **returned error** determines the outcome of the wide event:
 - On success (`err == nil`): The message is set to `"<event>-success"`.
-- On failure (`err != nil`): The message is set to `"<event>-failure"`, the canonical log escalates to `ERROR` level, and the `"error"` group is populated via `DefaultErrorFormatter` (or a custom `ErrorFormatter` configured with `clog.SetErrorFormatter`).
+- On failure (`err != nil` or panic): The message is set to `"<event>-failure"`, the canonical log escalates to `ERROR` level, and the `"error"` group is populated via `DefaultErrorFormatter` (or a custom `ErrorFormatter` configured with `clog.SetErrorFormatter`), preserving all fields accumulated across earlier steps.
 
 ### Rich Error Metadata Extraction (`DefaultErrorFormatter`)
 
@@ -541,10 +564,11 @@ assert.Equal(t, "canonical-log-line", bag.Message())
 
 ## Architecture & Documentation
 
-`canonical-logger` uses a **Zero-Dependency Ports & Adapters** architecture:
+`canonical-logger` combines a **Wide Event per Unit of Work** lifecycle with a **Zero-Dependency Ports & Adapters** architecture:
+- **[`docs/architecture.md`](docs/architecture.md)**: Deep-dive into the Wide Event / Unit of Work lifecycle, `FieldBag` internals, core Ports, and context resolution flow.
 - **[`docs/adapters.md`](docs/adapters.md)**: Step-by-step guide and copy-pasteable recipes for custom middlewares (Gin, gRPC), `ContextResolver` hooks (`gin`, `oapi-codegen`), and custom `io.Writer` sinks.
-- **[`docs/architecture.md`](docs/architecture.md)**: Deep-dive into the core Ports, `FieldBag` internals, and context resolution flow.
 - **[`docs/adr/0001-zero-dependency-core-and-userland-adapters.md`](docs/adr/0001-zero-dependency-core-and-userland-adapters.md)**: Architectural Decision Record explaining why `clog` ships zero third-party adapters in-repo in favor of composable Ports and userland recipes.
+- **[`docs/adr/0002-return-value-result-flow.md`](docs/adr/0002-return-value-result-flow.md)**: Architectural Decision Record explaining why unit-of-work outcomes are derived exclusively from return values (`Run`, `RunValue`, `HTTPHandler`).
 - **[`TODO.md`](TODO.md)**: Project roadmap and upcoming features.
 
 ---

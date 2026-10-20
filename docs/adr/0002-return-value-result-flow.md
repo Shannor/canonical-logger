@@ -29,7 +29,7 @@ The root cause isn't developer carelessness. **The outcome was read from a side-
 | `staticcheck`, `ineffassign`, `errcheck` | ❌ No | The inner `err` is used (`if err != nil`), so nothing is "unused". |
 | Named result `func f() (err error)` + `DeferResult(&err)` | ✅ Yes (compiler) | `return innerErr` assigns the named result before defers run; a bare `return` while shadowed is a compile error. **But** it only works for functions that return `error` (not `http.HandlerFunc` / `gin.HandlerFunc`), and relies on a convention nothing enforces. |
 | Transport reconciliation in middleware (status ≥ 500 ⇒ failure) | ⚠️ Partial | Misses shadowed errors with 2xx/4xx responses. Couples result correctness to an emitter, and HTTP middleware is slated to leave core (see below). **Rejected.** |
-| **Error as return value** (`Run`, appHandler pattern) | ✅ Yes (structural) | The outcome *is* the return value, so shadowing can't affect it. Prior art: Go blog [*Error handling and Go*](https://go.dev/blog/error-handling-and-go) `appHandler`, Echo / go-kit handlers, `errgroup.Go(func() error)`, cobra `RunE`. |
+| **Error as return value** (`Run`, Unit-of-Work / `RunInTx` / `appHandler` pattern) | ✅ Yes (structural) | The outcome *is* the return value, so shadowing can't affect it. Prior art: database transaction wrappers (`db.RunInTx(ctx, func(ctx) error)`), Go blog [*Error handling and Go*](https://go.dev/blog/error-handling-and-go) `appHandler`, Echo / go-kit handlers, `errgroup.Go(func() error)`, cobra `RunE`. |
 | Go language change to `:=` semantics | — | Long-standing proposals (e.g. golang/go#377). Not going to land, so we can't rely on it. |
 
 **Conclusion:** no static tool we can ship in a zero-dependency module catches the bug without heavy noise, and conventions only help in a subset of functions. The fix has to be in the API shape: **make the wrong thing unrepresentable.**
@@ -38,7 +38,9 @@ The root cause isn't developer carelessness. **The outcome was read from a side-
 
 ## Decision
 
-### 1. Outcomes come only from return values
+### 1. Outcomes come only from return values (Unit-of-Work Boundary)
+
+Because `FieldBag` accumulates a single wide event across an entire **Unit of Work** and emits once at the boundary, `Run` models the boundary using the same closure ergonomics as `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`: returning `nil` records `<event>-success`, and returning an `error` (or panicking) records `<event>-failure` while preserving all fields accumulated prior to the failure.
 
 `Run` is the single public primitive for recording a boundary outcome. Everything else is built on it:
 
@@ -61,7 +63,7 @@ The logic lives on as the unexported `recordResult`. There is no public way to s
 
 - `nil` → `<event>-success`. Error → `<event>-failure`, `"error"` group populated via `ErrorFormatter`, `ERROR` level.
 - **Panics** inside `Run` are recorded as `<event>-failure` and **re-panicked**. `Go` still recovers them. `Func` / `CronFunc` flush the canonical line and let the panic propagate.
-- **Sticky failure**: the bag tracks an outcome state. A `nil` result never downgrades an earlier failure (e.g. a nested `Run`) or a bag that already carries an `"error"` group (e.g. attached by a router adapter).
+- **Sticky failure**: the bag tracks an outcome state. Once a failure is recorded (e.g. by a nested `Run`) or the bag carries an `"error"` group (e.g. attached by a router adapter), a subsequent `nil` return never downgrades the unit of work to `-success`.
 - **Nesting**: the outermost wrapper owns the event name (it records last).
 - Background tasks now always emit `<name>-success` / `<name>-failure` instead of the generic `canonical-log-line`.
 

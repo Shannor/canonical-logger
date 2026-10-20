@@ -12,11 +12,11 @@ Every canonical logging integration uses four building blocks exported by `githu
 
 | Port / Function | Purpose |
 | :--- | :--- |
-| `clog.NewContext(ctx)` | Creates a fresh `*clog.FieldBag` (inheriting any context `*slog.Logger`) and returns the enriched `context.Context`. |
+| `clog.NewContext(ctx)` | Opens a new Unit of Work by creating a fresh `*clog.FieldBag` (inheriting any context `*slog.Logger`) and returning the enriched `context.Context`. |
 | `clog.BagFromContext(ctx)` | Retrieves the active `*clog.FieldBag` from `ctx` (or via registered `ContextResolver` hooks). |
 | `clog.RegisterContextResolver(fn)` | Registers a fallback `func(ctx context.Context) *clog.FieldBag` for frameworks that wrap or replace `context.Context`. |
-| `bag.HasGroup("error")` / `bag.HasWarning()` / `bag.Message()` / `bag.Attrs()` | Inspects accumulated state at the end of a request/task to determine log level and emit `[]slog.Attr`. |
-| `clog.Run(ctx, event, fn)` / `clog.RunValue` | Records a boundary outcome from `fn`'s returned error. Use inside framework handlers and RPC methods. Adapters should not record outcomes themselves. |
+| `bag.HasGroup("error")` / `bag.HasWarning()` / `bag.Message()` / `bag.Attrs()` | Inspects the finalized Unit of Work at the end of a request/task to determine log level and emit `[]slog.Attr`. |
+| `clog.Run(ctx, event, fn)` / `clog.RunValue` | Boundary wrapper that records the Unit of Work's outcome (`-success` vs `-failure`) from `fn`'s returned error. Use inside framework handlers and RPC methods. Adapters should not record outcomes themselves. |
 | `clog.ExtractTrace(sentryTrace, baggage)` | Extracts `traceId` and `spanId` from incoming headers or generates a random 32-char hex `traceId`. |
 
 ---
@@ -25,11 +25,11 @@ Every canonical logging integration uses four building blocks exported by `githu
 
 Standard `net/http` routers (Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux) work out of the box with `clog.HTTPMiddleware` and `clog.HTTPTraceMiddleware`.
 
-For frameworks with custom context types (like **Gin**, **Echo**, or **Fiber**), every canonical middleware follows the same 4-step lifecycle:
-1. **Initialize**: Create a `FieldBag` via `ctx := clog.NewContext(reqCtx)` and attach it to the request.
-2. **Execute**: Call the next handler in the chain (`c.Next()` or `next(c)`).
+For frameworks with custom context types (like **Gin**, **Echo**, or **Fiber**), every canonical middleware drives the same 4-step **Wide Event per Unit of Work** lifecycle (see [`docs/architecture.md`](./architecture.md)):
+1. **Open Unit of Work**: Create an isolated `FieldBag` via `ctx := clog.NewContext(reqCtx)` and attach it to the request.
+2. **Execute & Record Outcome**: Call the next handler in the chain (`c.Next()` or `next(c)`), where handlers and services accumulate fields and boundary wrappers (`clog.Run` / `clog.RunValue`) record `-success` or `-failure` from returned errors.
 3. **Evaluate Level**: Escalate to `slog.LevelError` if status >= 500, framework errors exist, or `bag.HasGroup("error")` is true; escalate to `slog.LevelWarn` if status >= 400 or `bag.HasWarning()` is true.
-4. **Emit**: Call `clog.LoggerFromContext(ctx).LogAttrs(ctx, level, bag.Message(), attrs...)` combining root transport attributes with `bag.Attrs()...`.
+4. **Emit Wide Event**: Call `clog.LoggerFromContext(ctx).LogAttrs(ctx, level, bag.Message(), attrs...)` combining root transport attributes with `bag.Attrs()...`.
 
 ### Recipe: Gin Middleware & TraceID
 

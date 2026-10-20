@@ -8,14 +8,22 @@ All code authored, edited, or reviewed by agents MUST adhere strictly to the gui
 
 ## 1. Core Architectural Pattern
 
-### The Canonical Log Line Pattern
+### The Canonical Log Line / Wide Event per Unit of Work
 
-Rather than scattering multiple `log.Info()` or `log.Debug()` lines across handlers, services, and DAOs, `clog` implements the **Canonical Log Line** pattern:
-- **One Rich Event Per Request/Task**: Exactly one structured JSON log line is emitted per HTTP request or background task lifecycle.
-- **Context Accumulation**: Metadata is accumulated in a thread-safe `FieldBag` attached to `context.Context` as execution traverses the stack.
-- **Emission at the Boundary**: The canonical line is emitted at the end of the request by `clog.HTTPMiddleware` (or a custom router middleware built on `clog`'s Ports—see `docs/adapters.md`), or upon task exit by `clog.Go` / `clog.Func` / `clog.CronFunc`.
+Rather than scattering multiple `log.Info()` or `log.Debug()` side effects across handlers, services, and DAOs, `clog` implements the **Canonical Log Line / Wide Event** pattern scoped to a **Unit of Work**:
+- **One Wide Event Per Unit of Work**: Exactly one structured JSON log line is emitted per HTTP request, RPC call, consumed message, or background task lifecycle.
+- **Context Accumulation (`FieldBag`)**: Transport middleware or a task runner opens a thread-safe `FieldBag` (the unit of work) attached to `context.Context`. Metadata is accumulated in the `FieldBag` as execution traverses the stack.
+- **Return-Value Outcome Boundary (`clog.Run`)**: Boundary wrappers (`HTTPHandler`, `Run`, `RunValue`, `Go`, `Func`, `CronFunc`) capture the unit of work's outcome from the returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure` with sticky failure semantics, preserving all fields accumulated before the error.
+- **Emission at the Boundary**: The canonical wide event is emitted once at the end of the request by `clog.HTTPMiddleware` (or a custom router middleware built on `clog`'s Ports—see `docs/adapters.md`), or upon task exit by `clog.Go` / `clog.Func` / `clog.CronFunc`.
 - **Zero Passing of Logger Instances**: Domain services and DAOs only need `context.Context` to enrich logs. Never pass logger instances through function signatures.
 - **100% Zero-Dependency Core**: `github.com/Shannor/canonical-logger` is a pure Go standard-library package (`log/slog`, `context`, `net/http`). Third-party router middlewares (Gin, Echo, gRPC), `ContextResolver` hooks (`oapi-codegen`), and custom SDK writers (`GCPWriter`) live in userland using the Ports documented in `docs/adapters.md`.
+
+### When to Use `clog` vs. Standard `log/slog`
+
+`clog` intentionally provides no `clog.Info()` or `clog.Error()` point-logging functions so inner layers cannot scatter ad-hoc log lines during a request:
+1. **Process Lifecycle Events (No Unit of Work)**: For startup/shutdown logs in `main()` (e.g. `"server listening on :8080"`, `"SIGTERM received"`), call standard `slog.Info()` / `slog.Error()` directly. They automatically use the `clog.NewJSONHandler` or `clog.NewConsoleHandler` configured on `slog.SetDefault`.
+2. **One-Off Synchronous Tasks**: For standalone operations like startup migrations or CLI commands, wrap them in `clog.Func("startup-migrations", func(ctx context.Context) error { ... })` to emit a single wide event with latency and outcome.
+3. **Inside an Active Request or Background Task**: **NEVER** call `slog.Info()` / `slog.Warn()` / `slog.Error()` inside handlers, services, or DAOs. Always attach fields to the active `FieldBag` via `clog.WithGroupFields()` / `clog.WithGroupField()`.
 
 ---
 
@@ -240,6 +248,7 @@ Before completing any task that modifies or adds logging code, verify the follow
 
 - [ ] **Boundary Layer Ownership**: Only API handlers, background tasks, and cron functions record results, via exactly one wrapper (`HTTPHandler`, `Run`, `RunValue`, `Go`, `Func`, `CronFunc`).
 - [ ] **Return-Value Results**: Every error path inside a wrapper `return`s the error. No error path writes a failure response and then returns `nil`.
+- [ ] **No Ad-Hoc `slog` Calls in Request/Task Paths**: Handlers, services, and DAOs do NOT call `slog.Info`, `slog.Warn`, or `slog.Error` during a Unit of Work; `slog.*` is reserved for process lifecycle events (`main()` startup/shutdown).
 - [ ] **No Error Grouping in Inner Layers**: Services and DAOs do NOT call `clog.WithGroupFields(ctx, "error", ...)`. They return wrapped Go errors.
 - [ ] **Group Naming Rules**:
   - API layer uses `"request"`.
