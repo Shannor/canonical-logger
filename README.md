@@ -15,11 +15,11 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 ## Highlights
 
 - **100% Zero-Dependency Standard Library Core**: Built directly on Go's `log/slog`, `context`, and `net/http` with **zero external runtime dependencies** in `go.mod`.
-- **Composable Ports for Any Framework**: Exposes `RegisterContextResolver`, `HasGroup`, `HasWarning`, `ExtractTrace`, and `SetErrorFormatter` so you can wire any third-party router (Gin, Echo, Fiber), OpenAPI generator (`oapi-codegen`), RPC server (gRPC), or cloud SDK (`io.Writer`) in ~25 lines of code (see [Building Custom Adapters & Writers (`docs/adapters.md`)](docs/adapters.md)).
+- **Composable Ports for Any Framework**: Exposes `RegisterContextResolver`, `HasGroup`, `HasWarning`, and `SetErrorFormatter` so you can wire any HTTP router (`net/http`, Gin, Echo, Fiber), OpenAPI generator (`oapi-codegen`), RPC server (gRPC), tracer, or cloud SDK (`io.Writer`) in ~25 lines of code (see [Building Custom Adapters & Writers (`docs/adapters/`)](docs/adapters/README.md)).
 - **Single Structured Event**: One log entry per request with complete operational, business, and error context.
 - **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getOrder", "rows", 1)`).
 - **Strongly-Typed `slog.Attr` & `LogValuer` Support**: Fast-path `WithAttrs` and `WithGroupAttrs` helpers plus automatic `slog.LogValuer` evaluation for custom type serialization and PII redaction.
-- **Standard `net/http` Middlewares**: Built-in `HTTPMiddleware` and `HTTPTraceMiddleware` compatible with Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux, and any `http.Handler`.
+- **Standard `net/http` Handler Wrapper**: Built-in `HTTPHandler` compatible with Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux, and any `http.Handler`.
 - **Shadow-Proof Unit-of-Work Result Tracking**: Outcomes are derived from return values via `clog.Run`, `clog.RunValue`, `clog.RunFunc`, `clog.HTTPHandler`, and `clog.Go`—ergonomically shaped like `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`. Returning `nil` records `<event>-success`; returning an error or panicking records `<event>-failure` while preserving every field accumulated before the error, so `:=` shadowing can never log a false success. Failures are sticky.
 - **Rich Boundary Error Tracking**: Failures automatically record error details, unwrap root causes, extract `Code()` / `Category()` / `ErrorFields()` metadata via pluggable `ErrorFormatter`, and format outcome messages (`<event>-success`, `<event>-failure`).
 - **Async & Background Support**:
@@ -51,7 +51,7 @@ import "github.com/Shannor/canonical-logger"
 
 `clog` scopes every canonical log line to a single **Unit of Work** across four phases:
 
-1. **Open Unit of Work (`NewContext`)**: Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a boundary runner (`Run`, `RunFunc`, `Go`) attaches a fresh, thread-safe `FieldBag` to `context.Context`.
+1. **Open Unit of Work (`NewContext`)**: Transport middleware (`net/http`, Gin, or gRPC interceptors) or a boundary runner (`Run`, `RunFunc`, `Go`) attaches a fresh, thread-safe `FieldBag` to `context.Context`.
 2. **Accumulate (`WithGroupFields` / `WithAttrs`)**: Handlers, services, and DAOs enrich their respective namespace groups as work progresses, without emitting premature log lines or passing logger instances.
 3. **Record Outcome (`Run` / `RunValue` / `HTTPHandler`)**: The boundary wrapper captures the function's returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure`, extracts structured error details via `ErrorFormatter`, and marks the failure as sticky so outer wrappers cannot downgrade it—all while preserving every field accumulated before the failure.
 4. **Emit (`LogAttrs` at Boundary Exit)**: When the outermost middleware or `Run` / `RunFunc` / `Go` boundary finishes, it inspects the finalized `FieldBag` and emits one canonical wide event.
@@ -74,7 +74,7 @@ Canonical logging relies on a clear separation of concerns across application la
 
 | Layer | Functions Permitted | Group Name | Purpose & Invariants |
 | --- | --- | --- | --- |
-| **Middleware** | `clog.HTTPMiddleware`, `clog.HTTPTraceMiddleware`, Custom router/Auth middlewares | `actor` / root | Emits HTTP root fields (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
+| **Middleware** | Custom HTTP / router / RPC / Auth middlewares ([`docs/adapters/`](docs/adapters/README.md)) | `actor` / root | Emits transport root fields (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
 | **Boundary (API / Webhooks)** | `HTTPHandler()`, `Run()`, `RunValue()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the canonical event name (`-success` / `-failure`), adds request input parameters & query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. **MUST NOT** set event names or touch the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). **MUST NOT** set event names or touch `"error"`. Returns standard Go errors. |
@@ -337,7 +337,9 @@ func (s Server) GetUser(ctx context.Context, req *pb.GetUserRequest) (*pb.User, 
 
 ## Quick Start
 
-### 1. Standard `net/http` / Go 1.22+ `ServeMux` / Chi (Built-In)
+### 1. Standard `net/http` / Go 1.22+ `ServeMux` / Chi (`clog.HTTPHandler`)
+
+`clog.HTTPHandler` works out of the box—if no outer middleware is installed, `clog.Run` automatically opens a `FieldBag` and flushes the canonical log line when the handler returns:
 
 ```go
 package main
@@ -362,21 +364,21 @@ func main() {
 		return err
 	}))
 
-	// Wrap handler with clog HTTPMiddleware and HTTPTraceMiddleware
-	handler := clog.HTTPMiddleware(clog.HTTPTraceMiddleware(mux))
-	_ = http.ListenAndServe(":8080", handler)
+	_ = http.ListenAndServe(":8080", mux)
 }
 ```
 
-### 2. Custom Frameworks (Gin, Echo, OpenAPI `oapi-codegen`, gRPC)
+### 2. Transport Middlewares, Frameworks & Tracers (`docs/adapters/`)
 
-To keep `canonical-logger` 100% dependency-free, third-party router middlewares and `ContextResolver` hooks are written in your application using `clog`'s exported Ports (`NewContext`, `BagFromContext`, `RegisterContextResolver`, `HasGroup`, `HasWarning`, `ExtractTrace`).
+To keep `canonical-logger` 100% dependency-free and unopinionated about transport schemas or tracing vendors, router middlewares, trace extractors, and `ContextResolver` hooks are written in your application using `clog`'s exported Ports (`NewContext`, `BagFromContext`, `RegisterContextResolver`, `HasGroup`, `HasWarning`).
 
-See **[Building Custom Adapters, Middlewares & Writers (`docs/adapters.md`)](docs/adapters.md)** for ready-to-copy recipes for:
-- **Gin** (`CanonicalLogger` middleware, `TraceID`, sensitive route parameter masking, and `gin.ContextKey` resolver)
-- **OpenAPI `oapi-codegen`** (strict-server middleware that records every operation's outcome by operationId, plus request validation/binding error hooks, and a `ContextResolver` for `gin-middleware`)
-- **gRPC** (`UnaryServerInterceptor`)
-- **Google Cloud Logging SDK** (`GCPWriter`)
+See **[Building Custom Adapters, Middlewares & Writers (`docs/adapters/`)](docs/adapters/README.md)** for ready-to-copy recipes:
+- **[Standard `net/http` Middleware](docs/adapters/nethttp.md)** (`HTTPMiddleware` for `status`, `method`, `path`, `ip`, `latency`, `user-agent`)
+- **[Gin Middleware & ContextResolver](docs/adapters/gin.md)** (`CanonicalLogger`, sensitive route parameter masking, and `gin.ContextKey` resolver)
+- **[OpenAPI `oapi-codegen` Strict Server](docs/adapters/oapi-codegen.md)** (strict-server middleware that records every operation's outcome by `operationId`, validation/binding error hooks, and `gin-middleware` resolver)
+- **[gRPC Unary Server Interceptor](docs/adapters/grpc.md)** (`UnaryServerInterceptor`)
+- **[Distributed Tracing](docs/adapters/tracing.md)** (OpenTelemetry, W3C `traceparent`, and Sentry `sentry-trace` / `baggage` middlewares)
+- **[Google Cloud Logging](docs/adapters/gcp-writer.md)** (Stdout JSON `GCPReplaceAttr` and custom SDK `GCPWriter`)
 
 ---
 
@@ -540,7 +542,7 @@ handler := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 slog.SetDefault(slog.New(handler))
 ```
 
-*(If your application streams logs directly via the `cloud.google.com/go/logging` SDK rather than stdout, see the `GCPWriter` recipe in [`docs/adapters.md`](docs/adapters.md#option-b-custom-google-cloud-logging-sdk-iowriter)).*
+*(If your application streams logs directly via the `cloud.google.com/go/logging` SDK rather than stdout, see the `GCPWriter` recipe in [`docs/adapters/gcp-writer.md`](docs/adapters/gcp-writer.md)).*
 
 ---
 
@@ -562,7 +564,7 @@ assert.Equal(t, "canonical-log-line", bag.Message())
 
 `canonical-logger` combines a **Wide Event per Unit of Work** lifecycle with a **Zero-Dependency Ports & Adapters** architecture:
 - **[`docs/architecture.md`](docs/architecture.md)**: Deep-dive into the Wide Event / Unit of Work lifecycle, `FieldBag` internals, core Ports, and context resolution flow.
-- **[`docs/adapters.md`](docs/adapters.md)**: Step-by-step guide and copy-pasteable recipes for custom middlewares (Gin, gRPC), `ContextResolver` hooks (`gin`, `oapi-codegen`), and custom `io.Writer` sinks.
+- **[`docs/adapters/`](docs/adapters/README.md)**: Step-by-step guide and copy-pasteable recipes for custom middlewares (`net/http`, Gin, gRPC), `ContextResolver` hooks (`gin`, `oapi-codegen`), distributed tracing, and custom `io.Writer` sinks.
 - **[`docs/adr/0001-zero-dependency-core-and-userland-adapters.md`](docs/adr/0001-zero-dependency-core-and-userland-adapters.md)**: Architectural Decision Record explaining why `clog` ships zero third-party adapters in-repo in favor of composable Ports and userland recipes.
 - **[`docs/adr/0002-return-value-result-flow.md`](docs/adr/0002-return-value-result-flow.md)**: Architectural Decision Record explaining why unit-of-work outcomes are derived exclusively from return values (`Run`, `RunValue`, `HTTPHandler`).
 - **[`TODO.md`](TODO.md)**: Project roadmap and upcoming features.

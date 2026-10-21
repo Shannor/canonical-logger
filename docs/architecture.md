@@ -31,7 +31,7 @@ Traditional application logging treats logging as an **immediate side effect**: 
 ### The 4-Phase Unit of Work Lifecycle
 
 1. **Open (`clog.NewContext`)**:
-   - Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a boundary runner (`Run`, `RunFunc`, `Go`) initializes a fresh, mutex-guarded `*FieldBag` on `context.Context`.
+   - Transport middleware (`net/http`, Gin, or gRPC interceptors) or a boundary runner (`Run`, `RunFunc`, `Go`) initializes a fresh, mutex-guarded `*FieldBag` on `context.Context`.
    - If no `FieldBag` is present in `ctx` when `clog.Run` is called, `Run` opens one and flushes the canonical log line when `fn` returns. If no `FieldBag` is present when `clog.With*` is called directly, it is a safe no-op, so domain services remain decoupled from transport setup in unit tests.
 2. **Accumulate (`clog.WithGroupFields`, `clog.WithGroupAttrs`, etc.)**:
    - Each architectural layer writes to its owned namespace (`actor`, `request`, `<service>.<method>`, `<dao>.<method>`).
@@ -62,16 +62,14 @@ github.com/Shannor/canonical-logger (Pure Go Standard Library)
 ├── console_handler.go      # Colorized human-readable ConsoleHandler for local development
 ├── fieldbag.go             # Thread-safe FieldBag, ContextResolver port, WithField(s)/WithAttrs helpers
 ├── result.go               # Run, RunValue, HTTPHandler (return-value results & standalone flush), ErrorFormatter
-├── background.go           # Detached goroutines (Go) and zero-arg closures (RunFunc)
-├── middleware.go           # Standard net/http HTTPMiddleware
-└── trace.go                # HTTPTraceMiddleware & exported ExtractTrace port
+└── background.go           # Detached goroutines (Go) and zero-arg closures (RunFunc)
 ```
 
 ---
 
 ## 3. Core Ports & How Userland Adapters Plug In
 
-Because the core package does not import third-party frameworks, it exposes **Ports** that userland middlewares, context resolvers, and log writers use to integrate cleanly (see [`docs/adapters.md`](./adapters.md) for complete copy-pasteable recipes):
+Because the core package does not import third-party frameworks or hardcode transport schemas, it exposes **Ports** that userland middlewares, context resolvers, and log writers use to integrate cleanly (see [`docs/adapters/`](./adapters/README.md) for complete copy-pasteable recipes):
 
 ### Port 1: `ContextResolver` & `RegisterContextResolver`
 
@@ -98,10 +96,6 @@ Custom router and RPC middlewares (Gin, Echo, Fiber, gRPC, message consumers) in
 - `bag.Message()`: Returns the canonical event name (e.g. `"checkout-order-success"` or `"canonical-log-line"`).
 - `bag.Attrs()`: Converts all root fields and nested groups into `[]slog.Attr` using zero-reflection fast paths for primitive types, `slog.Attr`, `slog.Value`, and `slog.LogValuer`.
 
-### Port 3: `ExtractTrace`
-
-`clog.ExtractTrace(sentryTrace, baggage)` parses incoming trace headers and falls back to generating a cryptographically random 32-character hex `traceId`, allowing any HTTP or RPC middleware to share trace extraction logic.
-
-### Port 4: `ErrorFormatter` & `SetErrorFormatter`
+### Port 3: `ErrorFormatter` & `SetErrorFormatter`
 
 Boundary layers wrap their work in `clog.Run(ctx, "event-name", fn)` (or `RunValue`, `RunFunc`, `HTTPHandler`, `Go`, all built on `Run`). The outcome is derived from `fn`'s **returned error**, never from a captured variable (see ADR-0002). When the returned error is non-nil, `clog` invokes the configured `ErrorFormatter` (`DefaultErrorFormatter` by default) to populate the `"error"` group with `"err"`, unwrapped root `"cause"`, `"code"`, `"category"`, and `ErrorFields()`.

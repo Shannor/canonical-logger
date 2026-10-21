@@ -96,9 +96,9 @@ func unwrapRootCause(err error) error {
 // If ctx does not already carry a FieldBag (for example, when no HTTP/RPC middleware is
 // installed, or in a standalone task, CLI command, or consumer), Run opens a fresh
 // FieldBag on the ctx passed to fn and flushes the canonical log line (with "job" and
-// "latency") when fn returns. If ctx already carries a FieldBag (opened by HTTPMiddleware,
-// a router middleware, Go, or an enclosing Run), Run records the outcome on that existing
-// bag and lets the outermost owner flush once at boundary exit.
+// "latency") when fn returns. If ctx already carries a FieldBag (opened by a transport
+// middleware, Go, or an enclosing Run), Run records the outcome on that existing bag and
+// lets the outermost owner flush once at boundary exit.
 //
 // Run is the single primitive for recording outcomes. Because the outcome is taken from
 // fn's return value rather than from a captured variable, := shadowing inside fn cannot

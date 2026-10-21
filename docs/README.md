@@ -6,8 +6,8 @@ This directory contains architectural documentation, adapter authoring guides, a
 
 ## Guides
 
-- **[Architecture Guide (`docs/architecture.md`)](./architecture.md)**: The **Canonical Log Line / Wide Event per Unit of Work** lifecycle, module topology, zero-dependency philosophy, and Core Ports (`ContextResolver`, `ErrorFormatter`, `FieldBag` inspection, `ExtractTrace`).
-- **[Building Custom Adapters, Middlewares & Writers (`docs/adapters.md`)](./adapters.md)**: How to write custom router middlewares (Gin, Echo), `ContextResolver` hooks (`gin`, `oapi-codegen`), gRPC interceptors, and cloud SDK `io.Writer` sinks (GCP Cloud Logging).
+- **[Architecture Guide (`docs/architecture.md`)](./architecture.md)**: The **Canonical Log Line / Wide Event per Unit of Work** lifecycle, module topology, zero-dependency philosophy, and Core Ports (`ContextResolver`, `ErrorFormatter`, `FieldBag` inspection).
+- **[Building Custom Adapters, Middlewares & Writers (`docs/adapters/`)](./adapters/README.md)**: Dedicated recipe files for `net/http`, Gin, `oapi-codegen` strict servers, gRPC interceptors, distributed tracing (OpenTelemetry, W3C, Sentry), and cloud SDK `io.Writer` sinks (GCP Cloud Logging).
 
 ---
 

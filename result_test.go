@@ -3,7 +3,9 @@ package clog
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -177,6 +179,8 @@ func TestRecordResult_NilErrorWithExistingErrorGroupIsFailure(t *testing.T) {
 
 func TestHTTPHandler_RecordsReturnedError(t *testing.T) {
 	var buf bytes.Buffer
+	logger := slog.New(NewJSONHandler(&buf, nil))
+
 	h := HTTPHandler("handle-action", func(w http.ResponseWriter, r *http.Request) error {
 		data, err := process(r.Context())
 		if err != nil {
@@ -186,10 +190,19 @@ func TestHTTPHandler_RecordsReturnedError(t *testing.T) {
 		_, _ = w.Write([]byte(data))
 		return nil
 	})
-	srv := setupHTTPServer(&buf, h.ServeHTTP)
+
+	// Simulate an outer transport middleware that opens a FieldBag and emits once on exit.
+	srv := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := NewContext(NewContextWithLogger(r.Context(), logger))
+		bag := BagFromContext(ctx)
+		h.ServeHTTP(w, r.WithContext(ctx))
+		LoggerFromContext(ctx).LogAttrs(ctx, slog.LevelError, bag.Message(), bag.Attrs()...)
+	})
 
 	srv.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/x", nil))
-	out := parseLogLine(t, &buf)
+
+	var out map[string]any
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &out))
 	assert.Equal(t, "handle-action-failure", out["message"])
 	errGroup := out["error"].(map[string]any)
 	assert.Equal(t, "process failed", errGroup["err"])
@@ -293,9 +306,9 @@ func TestRun_NestedOuterOwnsEventAndFailureIsSticky(t *testing.T) {
 	assert.Equal(t, "done", lines[0]["step"])
 }
 
-// TestHTTPHandler_WithoutMiddlewareStillFlushes verifies HTTPHandler does not depend on
-// HTTPMiddleware: without a FieldBag on the request context, Run opens one and flushes
-// the canonical log line when the handler returns.
+// TestHTTPHandler_WithoutMiddlewareStillFlushes verifies HTTPHandler works standalone:
+// without a FieldBag on the request context, Run opens one and flushes the canonical
+// log line when the handler returns.
 func TestHTTPHandler_WithoutMiddlewareStillFlushes(t *testing.T) {
 	h := HTTPHandler("no-bag", func(w http.ResponseWriter, r *http.Request) error {
 		WithGroupField(r.Context(), "request", "tea", true)

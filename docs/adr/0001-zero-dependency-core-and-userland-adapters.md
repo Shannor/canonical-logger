@@ -17,28 +17,27 @@ Importing those third-party libraries directly in `canonical-logger` created two
 
 ## Decision
 
-We adopt a **100% Zero-Dependency Standard Library Core** that exposes composable **Ports**, paired with **Userland Adapter Recipes** in [`docs/adapters.md`](../adapters.md):
+We adopt a **100% Zero-Dependency Standard Library Core** that exposes composable **Ports**, paired with **Userland Adapter Recipes** in [`docs/adapters/`](../adapters/README.md):
 
 ### 1. Pure Go Standard Library Module (`github.com/Shannor/canonical-logger`)
 - The repository contains a single root `go.mod` with **zero external runtime dependencies** (only Go's standard library: `log/slog`, `context`, `net/http`, `sync`, `time`).
-- Standard `net/http` middlewares (`HTTPMiddleware`, `HTTPTraceMiddleware`) and pure `slog` handlers/helpers (`NewJSONHandler`, `NewConsoleHandler`, `NewSamplingHandler`, `GCPReplaceAttr`) ship directly in the core package.
-- The legacy `pkg/xlog` compatibility shim is removed.
+- Pure `slog` handlers/helpers (`NewJSONHandler`, `NewConsoleHandler`, `NewSamplingHandler`, `GCPReplaceAttr`) and boundary outcome wrappers (`Run`, `RunValue`, `RunFunc`, `HTTPHandler`, `Go`) ship directly in the core package.
+- Transport middlewares (`net/http`, Gin, gRPC) and vendor-specific trace extractors live in userland recipes under [`docs/adapters/`](../adapters/README.md).
+- The legacy `pkg/xlog` and `pkg/clog` compatibility shims are removed.
 
 ### 2. Core "Ports" for Any Framework or Sink
-Rather than importing third-party frameworks, `clog` exports four clean Ports so any router, RPC interceptor, context wrapper, or cloud SDK writer can be wired in userland without accessing private package internals:
+Rather than importing third-party frameworks, `clog` exports clean Ports so any router, RPC interceptor, context wrapper, or cloud SDK writer can be wired in userland without accessing private package internals:
 - **Pluggable Context Resolution (`ContextResolver` & `RegisterContextResolver`)**:
   - `BagFromContext(ctx)` checks the standard Go `context.Context` key first (O(1) fast path), and only if absent iterates registered `ContextResolver` hooks.
   - Applications using Gin or `oapi-codegen` register a 6-line `ContextResolver` in their own middleware package.
 - **FieldBag Inspection (`HasGroup`, `HasWarning`, `Attrs`, `Message`)**:
   - Exported on `*FieldBag` so custom middlewares and interceptors can determine log severity escalation (`INFO` vs `WARN` vs `ERROR`) and emit accumulated attributes.
-- **Trace Extraction (`ExtractTrace`)**:
-  - Exported so custom HTTP/RPC middlewares can reuse trace extraction and fallback ID generation.
 - **Pluggable Error Formatting (`ErrorFormatter` & `SetErrorFormatter`)**:
   - Allows customizing how domain errors are formatted into the `"error"` group at boundary layers.
 
 ### 3. Documented Adapter Recipes Instead of In-Repo Sub-Modules
 - We do **not** maintain third-party adapter sub-modules (`adapter/gin`, `adapter/gcp`, etc.) in this repository.
-- Instead, [`docs/adapters.md`](../adapters.md) provides complete, copy-pasteable reference implementations for Gin, `oapi-codegen`, gRPC, and the Google Cloud Logging SDK `io.Writer`.
+- Instead, [`docs/adapters/`](../adapters/README.md) provides complete, copy-pasteable reference implementations in dedicated files for `net/http`, Gin, `oapi-codegen`, gRPC, distributed tracing, and the Google Cloud Logging SDK `io.Writer`.
 
 ---
 
@@ -58,4 +57,4 @@ Rather than importing third-party frameworks, `clog` exports four clean Ports so
   - Single-module repository with simple semantic versioning (`vX.Y.Z`)—no `go.work` or multi-tag release scripts required.
   - Users have full control over their framework middleware and only import the exact libraries their service already uses (e.g. Gin without `oapi-codegen`, or Gin with `oapi-codegen`).
 - **Trade-offs:**
-  - Users of non-`net/http` frameworks (like Gin or gRPC) copy a ~30-line middleware snippet from [`docs/adapters.md`](../adapters.md) into their application's middleware package rather than importing a pre-packaged adapter module.
+  - Users copy a ~30-line middleware snippet from [`docs/adapters/`](../adapters/README.md) into their application's middleware package rather than importing a pre-packaged adapter module.

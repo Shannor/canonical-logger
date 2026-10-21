@@ -14,9 +14,9 @@ Rather than scattering multiple `log.Info()` or `log.Debug()` side effects acros
 - **One Wide Event Per Unit of Work**: Exactly one structured JSON log line is emitted per HTTP request, RPC call, consumed message, or background task lifecycle.
 - **Context Accumulation (`FieldBag`)**: Transport middleware or a task runner opens a thread-safe `FieldBag` (the unit of work) attached to `context.Context`. Metadata is accumulated in the `FieldBag` as execution traverses the stack.
 - **Return-Value Outcome Boundary (`clog.Run`)**: Boundary wrappers (`HTTPHandler`, `Run`, `RunValue`, `RunFunc`, `Go`) capture the unit of work's outcome from the returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure` with sticky failure semantics, preserving all fields accumulated before the error.
-- **Emission at the Boundary**: The canonical wide event is emitted once at the end of the request by `clog.HTTPMiddleware` (or a custom router middleware built on `clog`'s Ports—see `docs/adapters.md`), or automatically upon exit by `clog.Run` (when no outer middleware opened a `FieldBag`), `clog.RunFunc`, and `clog.Go`.
+- **Emission at the Boundary**: The canonical wide event is emitted once at the end of the request by a transport middleware built on `clog`'s Ports (see `docs/adapters/`), or automatically upon exit by `clog.Run` (when no outer middleware opened a `FieldBag`), `clog.RunFunc`, and `clog.Go`.
 - **Zero Passing of Logger Instances**: Domain services and DAOs only need `context.Context` to enrich logs. Never pass logger instances through function signatures.
-- **100% Zero-Dependency Core**: `github.com/Shannor/canonical-logger` is a pure Go standard-library package (`log/slog`, `context`, `net/http`). Third-party router middlewares (Gin, Echo, gRPC), `ContextResolver` hooks (`oapi-codegen`), and custom SDK writers (`GCPWriter`) live in userland using the Ports documented in `docs/adapters.md`.
+- **100% Zero-Dependency Core**: `github.com/Shannor/canonical-logger` is a pure Go standard-library package (`log/slog`, `context`, `net/http`). Transport middlewares (`net/http`, Gin, Echo, gRPC), trace extractors, `ContextResolver` hooks (`oapi-codegen`), and custom SDK writers (`GCPWriter`) live in userland using the Ports documented in `docs/adapters/`.
 
 ### When to Use `clog` vs. Standard `log/slog`
 
@@ -33,7 +33,7 @@ Every layer in the application has strict boundaries regarding what it may and m
 
 | Layer | Functions Permitted | Group Name | Responsibilities |
 | --- | --- | --- | --- |
-| **Middleware** | `clog.HTTPMiddleware`, `clog.HTTPTraceMiddleware`, Custom router/Auth middlewares | `actor` / root fields | Emits root HTTP metadata (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
+| **Middleware** | Custom HTTP / router / trace / Auth middlewares ([`docs/adapters/`](docs/adapters/README.md)) | `actor` / root fields | Emits root HTTP metadata (`status`, `method`, `path`, `ip`, `latency`, `user-agent`, `traceId`, `spanId`) and identity context (`actor`). |
 | **Boundary (API / Webhook Handlers)** | `HTTPHandler()`, `Run()`, `RunValue()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the event name (`-success` / `-failure`), captures request payload metadata and query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. MUST NOT set event names or populate the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). MUST NOT set event names or populate `"error"`. Returns standard Go errors. |

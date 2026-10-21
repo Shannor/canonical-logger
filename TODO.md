@@ -10,7 +10,7 @@ Currently, the root package `github.com/Shannor/canonical-logger` directly impor
 
 - [x] **Zero-Dependency Core**:
   - The core package (`clog`) depends **exclusively on the Go standard library** (`log/slog`, `context`, `sync`, `strings`, `time`, `net/http`).
-  - Removed third-party framework code (`gin`, `oapi-codegen`, `gcp/logging`) from the repository and documented copy-pasteable userland adapter recipes in `docs/adapters.md` (see [ADR-0001](docs/adr/0001-zero-dependency-core-and-userland-adapters.md)).
+  - Removed third-party framework code (`gin`, `oapi-codegen`, `gcp/logging`) from the repository and documented copy-pasteable userland adapter recipes in `docs/adapters/` (see [ADR-0001](docs/adr/0001-zero-dependency-core-and-userland-adapters.md)).
   - The root `go.mod` has **zero external direct dependencies** (except test dependencies like `testify`).
 - [x] **Pluggable Context Resolvers (`ContextResolver`)**:
   - Defined a pluggable resolver interface in core:
@@ -24,11 +24,10 @@ Currently, the root package `github.com/Shannor/canonical-logger` directly impor
   - Ensure zero references to `xlog` remain in the core codebase.
 - [x] **Return-Value Result Flow** ([ADR-0002](docs/adr/0002-return-value-result-flow.md)):
   - Removed `SetResult`, `DeferResult`, and `Func`, and renamed `CronFunc` to `RunFunc`. Outcomes come only from return values via `Run` (which also opens and flushes a `FieldBag` when no outer middleware is active), `RunValue`, `RunFunc`, `HTTPHandler`, and `Go` (`func(ctx) error`).
-- [ ] **Move HTTP Middleware Out of Core into Recipes**:
-  - Migrate `HTTPMiddleware` / `HTTPTraceMiddleware` emission logic to copy-pasteable `net/http` recipes in `docs/adapters.md`, matching the Gin / Echo / gRPC recipes.
-  - Core keeps only the Ports (`NewContext`, `BagFromContext`, `HasGroup`, `HasWarning`, `Message`, `Attrs`, `ExtractTrace`, `Run`).
-  - Result correctness MUST NOT depend on middleware: no status-code interception or outcome reconciliation in emitters.
-  - `clog.HTTPHandler` / `clog.HTTPHandlerFunc` **stay in core** (decided in ADR-0002 §5): they are stdlib-only and record outcomes without emitting.
+- [x] **Move HTTP & Trace Middleware Out of Core into `docs/adapters/` Recipes**:
+  - Migrated `HTTPMiddleware` and `HTTPTraceMiddleware` (along with OpenTelemetry, W3C `traceparent`, and Sentry trace extraction) to dedicated recipe files in `docs/adapters/` (`nethttp.md`, `tracing.md`), matching `gin.md`, `oapi-codegen.md`, `grpc.md`, and `gcp-writer.md`.
+  - Core keeps only the Ports (`NewContext`, `BagFromContext`, `RegisterContextResolver`, `HasGroup`, `HasWarning`, `Message`, `Attrs`, `Run`, `RunValue`, `RunFunc`, `HTTPHandler`, `Go`, `SetErrorFormatter`).
+  - Result correctness does not depend on middleware: `Run` and `HTTPHandler` auto-open and flush a `FieldBag` when no outer middleware is installed.
 
 ---
 
@@ -60,14 +59,14 @@ EventX was designed around an HTTP monolith using Gin. In modern distributed sys
     - Temporal workflow & activity interceptors
     - Watermill message router middleware
 
-### gRPC & HTTP Router Recipes (`docs/adapters.md`)
+### gRPC & HTTP Router Recipes (`docs/adapters/`)
 - [x] **gRPC Unary Server Interceptor Recipe**:
-  - Documented in `docs/adapters.md` using `clog`'s exported Ports.
+  - Documented in `docs/adapters/grpc.md` using `clog`'s exported Ports.
 - [x] **Gin & OpenAPI (`oapi-codegen`) Recipes**:
-  - Documented decoupled Gin middleware, `TraceID`, and separate `gin` and `oapi-codegen` `ContextResolver` recipes in `docs/adapters.md`.
-- [x] **Standard `net/http` in Core (`HTTPMiddleware`, `HTTPTraceMiddleware`)**:
-  - Built-in `net/http` middleware (`func(http.Handler) http.Handler`) supporting Go 1.22+ `http.ServeMux`, Chi, Gorilla, etc.
-- [ ] **Additional Router Recipes (`docs/adapters.md`)**:
+  - Documented decoupled Gin middleware and `oapi-codegen` strict server recipes in `docs/adapters/gin.md` and `docs/adapters/oapi-codegen.md`.
+- [x] **Standard `net/http` & Tracing Recipes**:
+  - Documented `net/http` middleware in `docs/adapters/nethttp.md` and OpenTelemetry / W3C `traceparent` / Sentry trace middlewares in `docs/adapters/tracing.md`, while keeping `clog.HTTPHandler` in core.
+- [ ] **Additional Router Recipes (`docs/adapters/`)**:
   - Echo (`echo.MiddlewareFunc`) and Fiber (`fiber.Handler`) recipes.
 
 ---

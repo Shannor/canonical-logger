@@ -261,76 +261,9 @@ func TestLoggingContract_GroupPathEdgeCases(t *testing.T) {
 	assert.Equal(t, "preserved", c["truncatedKey"])
 }
 
-// TestLoggingContract_ExtractTraceEdgeCases verifies all valid and malformed variations
-// of sentry-trace and baggage headers.
-func TestLoggingContract_ExtractTraceEdgeCases(t *testing.T) {
-	const valid32 = "d4cda95b652f4a1592b449d5929fda1b"
-
-	tests := []struct {
-		name        string
-		sentryTrace string
-		baggage     string
-		wantTraceID string
-		wantSpanID  string
-		wantRandom  bool
-	}{
-		{
-			name:        "valid 3-part sentry-trace",
-			sentryTrace: valid32 + "-6e0c63257de34c92-1",
-			wantTraceID: valid32,
-			wantSpanID:  "6e0c63257de34c92",
-		},
-		{
-			name:        "valid 2-part sentry-trace without sampled flag",
-			sentryTrace: valid32 + "-6e0c63257de34c92",
-			wantTraceID: valid32,
-			wantSpanID:  "6e0c63257de34c92",
-		},
-		{
-			name:        "sentry-trace with extra dashes in tail",
-			sentryTrace: valid32 + "-6e0c63257de34c92-1-extra",
-			wantTraceID: valid32,
-			wantSpanID:  "6e0c63257de34c92",
-		},
-		{
-			name:        "short trace ID falls back to baggage",
-			sentryTrace: "short-6e0c63257de34c92-1",
-			baggage:     "env=prod, sentry-trace_id=" + valid32 + " , sample=1",
-			wantTraceID: valid32,
-			wantSpanID:  "",
-		},
-		{
-			name:        "sentry-trace without dash falls back to baggage",
-			sentryTrace: valid32,
-			baggage:     "sentry-trace_id=baggage-trace-1",
-			wantTraceID: "baggage-trace-1",
-			wantSpanID:  "",
-		},
-		{
-			name:       "malformed baggage falls back to generated 32-char trace ID",
-			baggage:    "invalid_entry,another=1,sentry-other=2",
-			wantRandom: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			traceID, spanID := ExtractTrace(tt.sentryTrace, tt.baggage)
-			if tt.wantRandom {
-				assert.Len(t, traceID, 32)
-				assert.Empty(t, spanID)
-			} else {
-				assert.Equal(t, tt.wantTraceID, traceID)
-				assert.Equal(t, tt.wantSpanID, spanID)
-			}
-		})
-	}
-}
-
-// TestLoggingContract_HTTPStackAllKeysPreserved verifies that a full HTTP request through
-// HTTPMiddleware + HTTPTraceMiddleware preserves all 6 standard HTTP keys, trace keys,
-// root keys, nested group keys, and error/result keys.
-func TestLoggingContract_HTTPStackAllKeysPreserved(t *testing.T) {
+// TestLoggingContract_HTTPHandlerAllKeysPreserved verifies that an HTTP request through
+// HTTPHandler preserves all root keys, nested group keys, and error/result keys.
+func TestLoggingContract_HTTPHandlerAllKeysPreserved(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(NewJSONHandler(&buf, nil))
 
@@ -359,13 +292,10 @@ func TestLoggingContract_HTTPStackAllKeysPreserved(t *testing.T) {
 
 	srv := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(NewContextWithLogger(r.Context(), logger))
-		HTTPMiddleware(HTTPTraceMiddleware(handler)).ServeHTTP(w, r)
+		handler.ServeHTTP(w, r)
 	})
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/checkout?currency=USD", nil)
-	req.Header.Set(HeaderSentryTrace, "d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1")
-	req.Header.Set("X-Forwarded-For", " 198.51.100.7 , 10.0.0.1 ")
-	req.Header.Set("User-Agent", "test-agent/2.0")
 	w := httptest.NewRecorder()
 
 	srv.ServeHTTP(w, req)
@@ -373,19 +303,10 @@ func TestLoggingContract_HTTPStackAllKeysPreserved(t *testing.T) {
 	var out map[string]any
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &out))
 
-	// Standard HTTP fields
 	assert.Equal(t, "ERROR", out["level"])
 	assert.Equal(t, "checkout-order-failure", out["message"])
-	assert.Equal(t, float64(http.StatusPaymentRequired), out["status"])
-	assert.Equal(t, "POST", out["method"])
-	assert.Equal(t, "/v1/checkout?currency=USD", out["path"])
-	assert.Equal(t, "198.51.100.7", out["ip"])
-	assert.Equal(t, "test-agent/2.0", out["user-agent"])
+	assert.Equal(t, "checkout-order", out["job"])
 	assert.NotEmpty(t, out["latency"])
-
-	// Trace fields
-	assert.Equal(t, "d4cda95b652f4a1592b449d5929fda1b", out["traceId"])
-	assert.Equal(t, "6e0c63257de34c92", out["spanId"])
 
 	// Root fields
 	assert.Equal(t, "tnt_42", out["tenantId"])
@@ -506,16 +427,6 @@ func TestAllocations(t *testing.T) {
 			_ = bag.HasWarning()
 		})
 		assert.Equal(t, float64(0), allocs, "HasWarning must not allocate")
-	})
-
-	t.Run("ExtractTrace_SentryTraceAndBaggage_ZeroAllocs", func(t *testing.T) {
-		const st = "d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1"
-		const bg = "other=val,sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b,env=prod"
-		allocs := testing.AllocsPerRun(100, func() {
-			_, _ = ExtractTrace(st, "")
-			_, _ = ExtractTrace("", bg)
-		})
-		assert.Equal(t, float64(0), allocs, "ExtractTrace with sentry-trace or baggage header must not allocate")
 	})
 
 	t.Run("SamplingHandler_DroppedLog_ZeroAllocs", func(t *testing.T) {

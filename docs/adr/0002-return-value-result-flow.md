@@ -72,17 +72,17 @@ The logic lives on as the unexported `recordResult`. There is no public way to s
 An earlier draft reconciled `-success` + HTTP 5xx in `HTTPMiddleware`. It was dropped:
 - it only covers HTTP and only 5xx;
 - it ties correctness to an emitter;
-- `HTTPMiddleware` / `HTTPTraceMiddleware` are planned to move out of core into copy-pasteable recipes in `docs/adapters.md`, like the Gin / Echo / gRPC recipes (TODO §1).
+- `HTTPMiddleware` / `HTTPTraceMiddleware` moved out of core into copy-pasteable recipes in [`docs/adapters/`](../adapters/README.md), alongside the Gin / gRPC / tracing recipes (TODO §1).
 
 Emitters (core or userland) only *read* the bag (`Message`, `HasGroup`, `HasWarning`, `Attrs`) and never record or rewrite outcomes.
 
 ### 5. Core scope rule: record in core, emit in recipes
 
-Core may contain **standard-library-only helpers that record outcomes** (`Run`, `RunValue`, `RunFunc`, `HTTPHandler`, `Go`). Helpers that **emit** transport-specific canonical lines or **reconcile/rewrite** outcomes from transport state belong in userland recipes (`docs/adapters.md`), alongside the Gin / Echo / gRPC recipes.
+Core may contain **standard-library-only helpers that record outcomes** (`Run`, `RunValue`, `RunFunc`, `HTTPHandler`, `Go`). Helpers that **emit** transport-specific canonical lines or **reconcile/rewrite** outcomes from transport state belong in userland recipes ([`docs/adapters/`](../adapters/README.md)), alongside the `net/http` / Gin / gRPC recipes.
 
 Applying the rule:
-- `clog.HTTPHandler` / `clog.HTTPHandlerFunc` **stay in core**. They are ~6 lines over `net/http`, delegate to `Run`, and make the shadow-proof pattern the shortest one for every `http.Handler`-compatible router (ServeMux, Chi, gorilla). When no `FieldBag` is on the request context, `Run` opens one and flushes on exit, so `HTTPHandler` works with or without `HTTPMiddleware`.
-- They use the `HTTP` prefix (not `Handler` / `HandlerFunc`) because in this package "Handler" already means `slog.Handler` (`SamplingHandler`, `ConsoleHandler`, `NewJSONHandler`). The prefix also matches `HTTPMiddleware` / `HTTPTraceMiddleware`.
+- `clog.HTTPHandler` / `clog.HTTPHandlerFunc` **stay in core**. They are ~6 lines over `net/http`, delegate to `Run`, and make the shadow-proof pattern the shortest one for every `http.Handler`-compatible router (ServeMux, Chi, gorilla). When no `FieldBag` is on the request context, `Run` opens one and flushes on exit, so `HTTPHandler` works with or without an HTTP middleware.
+- They use the `HTTP` prefix (not `Handler` / `HandlerFunc`) because in this package "Handler" already means `slog.Handler` (`SamplingHandler`, `ConsoleHandler`, `NewJSONHandler`).
 - `HTTPHandler` deliberately does **not** render error responses. Response rendering is application policy.
 - Framework equivalents (e.g. a `gin.HandlerFunc` adapter) are not added to core. They live in recipes per ADR-0001.
 
@@ -120,5 +120,4 @@ Applying the rule:
 
 ### Follow-ups
 
-- Move `HTTPMiddleware` / `HTTPTraceMiddleware` to `docs/adapters.md` recipes (TODO §1).
 - Optional `clogvet` analyzer in a **separate module** (keeps core zero-dependency): flag error paths inside `Run`/`HTTPHandler` closures that write an error response and then `return nil`.

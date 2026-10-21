@@ -477,33 +477,7 @@ func BenchmarkPort2_BoundaryInspection(b *testing.B) {
 	})
 }
 
-func BenchmarkPort3_ExtractTrace(b *testing.B) {
-	const validSentryTrace = "d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1"
-	const validBaggage = "other=val,sentry-trace_id=d4cda95b652f4a1592b449d5929fda1b,env=prod"
-
-	b.Run("SentryTrace_Valid", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_, _ = ExtractTrace(validSentryTrace, "")
-		}
-	})
-
-	b.Run("Baggage_Fallback", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_, _ = ExtractTrace("", validBaggage)
-		}
-	})
-
-	b.Run("GenerateTraceID_Fallback", func(b *testing.B) {
-		b.ReportAllocs()
-		for i := 0; i < b.N; i++ {
-			_, _ = ExtractTrace("", "")
-		}
-	})
-}
-
-func BenchmarkPort4_ResultFormatting(b *testing.B) {
+func BenchmarkPort3_ResultFormatting(b *testing.B) {
 	rootCause := errors.New("pq: duplicate key value violates unique constraint")
 	richErr := fmt.Errorf("create order failed: %w", &benchRichError{
 		msg:      "order conflict",
@@ -592,12 +566,7 @@ func BenchmarkHTTPStack(b *testing.B) {
 		return nil
 	})
 
-	stack := HTTPMiddleware(HTTPTraceMiddleware(appHandler))
-
 	baseReq := httptest.NewRequest(http.MethodPost, "/v1/orders/checkout?source=mobile", nil)
-	baseReq.Header.Set(HeaderSentryTrace, "d4cda95b652f4a1592b449d5929fda1b-6e0c63257de34c92-1")
-	baseReq.Header.Set("X-Forwarded-For", "203.0.113.195, 70.41.3.18")
-	baseReq.Header.Set("User-Agent", "checkout-client/1.0")
 	baseReq = baseReq.WithContext(NewContextWithLogger(baseReq.Context(), logger))
 
 	rw := &discardResponseWriter{header: make(http.Header, 2)}
@@ -605,7 +574,7 @@ func BenchmarkHTTPStack(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		stack.ServeHTTP(rw, baseReq)
+		appHandler.ServeHTTP(rw, baseReq)
 	}
 }
 
