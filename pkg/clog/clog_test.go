@@ -24,6 +24,10 @@ func TestPkgClog_Forwarding(t *testing.T) {
 
 	assert.Equal(t, "custom-msg", bag.Message())
 
-	clog.SetResult(ctx, "task", nil)
+	require.NoError(t, clog.Run(ctx, "task", func(context.Context) error { return nil }))
 	assert.Equal(t, "task-success", bag.Message())
+
+	v, err := clog.RunValue(ctx, "task", func(context.Context) (int, error) { return 7, nil })
+	require.NoError(t, err)
+	assert.Equal(t, 7, v)
 }

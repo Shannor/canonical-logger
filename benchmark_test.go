@@ -62,7 +62,7 @@ func newPopulatedBag() (context.Context, *FieldBag) {
 		slog.String("table", "orders"),
 		slog.Int64("durationMs", 4),
 	)
-	SetResult(ctx, "checkout-order", nil)
+	recordResult(ctx, "checkout-order", nil)
 	return ctx, BagFromContext(ctx)
 }
 
@@ -134,7 +134,7 @@ func BenchmarkBaseline(b *testing.B) {
 				slog.String("table", "orders"),
 				slog.Int64("durationMs", 4),
 			)
-			SetResult(ctx, "checkout-order", nil)
+			recordResult(ctx, "checkout-order", nil)
 
 			bag := BagFromContext(ctx)
 			attrs := []slog.Attr{
@@ -164,7 +164,7 @@ func BenchmarkBaseline(b *testing.B) {
 			WithGroupField(ctx, "orderService.checkout", "totalCents", int64(4999))
 			WithGroupField(ctx, "orderDAO.create", "table", "orders")
 			WithGroupField(ctx, "orderDAO.create", "durationMs", int64(4))
-			SetResult(ctx, "checkout-order", nil)
+			recordResult(ctx, "checkout-order", nil)
 
 			bag := BagFromContext(ctx)
 			attrs := []slog.Attr{
@@ -204,7 +204,7 @@ func BenchmarkBaseline(b *testing.B) {
 				"table":      "orders",
 				"durationMs": int64(4),
 			})
-			SetResult(ctx, "checkout-order", nil)
+			recordResult(ctx, "checkout-order", nil)
 
 			bag := BagFromContext(ctx)
 			attrs := []slog.Attr{
@@ -516,39 +516,39 @@ func BenchmarkPort4_ResultFormatting(b *testing.B) {
 		cause: rootCause,
 	})
 
-	b.Run("SetResult_Success", func(b *testing.B) {
+	b.Run("RecordResult_Success", func(b *testing.B) {
 		ctx := NewContext(context.Background())
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			SetResult(ctx, "checkout-order", nil)
+			recordResult(ctx, "checkout-order", nil)
 		}
 	})
 
-	b.Run("SetResult_Failure_RichError", func(b *testing.B) {
+	b.Run("RecordResult_Failure_RichError", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			ctx := NewContext(context.Background())
-			SetResult(ctx, "checkout-order", richErr)
+			recordResult(ctx, "checkout-order", richErr)
 		}
 	})
 
-	b.Run("DeferResult_Success", func(b *testing.B) {
+	b.Run("Run_Success", func(b *testing.B) {
 		ctx := NewContext(context.Background())
-		var err error
+		fn := func(context.Context) error { return nil }
 		b.ReportAllocs()
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			DeferResult(ctx, "checkout-order", &err)
+			_ = Run(ctx, "checkout-order", fn)
 		}
 	})
 
-	b.Run("DeferResult_Failure_RichError", func(b *testing.B) {
-		err := richErr
+	b.Run("Run_Failure_RichError", func(b *testing.B) {
+		fn := func(context.Context) error { return richErr }
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
 			ctx := NewContext(context.Background())
-			DeferResult(ctx, "checkout-order", &err)
+			_ = Run(ctx, "checkout-order", fn)
 		}
 	})
 }
@@ -569,10 +569,8 @@ func (d *discardResponseWriter) WriteHeader(statusCode int)  { d.code = statusCo
 func BenchmarkHTTPStack(b *testing.B) {
 	logger := slog.New(NewJSONHandler(io.Discard, nil))
 
-	appHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	appHandler := HTTPHandler("checkout-order", func(w http.ResponseWriter, r *http.Request) error {
 		ctx := r.Context()
-		var err error
-		defer DeferResult(ctx, "checkout-order", &err)
 
 		WithGroupAttrs(ctx, "actor",
 			slog.String("userId", "usr_123"),
@@ -591,6 +589,7 @@ func BenchmarkHTTPStack(b *testing.B) {
 			slog.Int64("durationMs", 4),
 		)
 		w.WriteHeader(http.StatusOK)
+		return nil
 	})
 
 	stack := HTTPMiddleware(HTTPTraceMiddleware(appHandler))
@@ -713,12 +712,12 @@ func BenchmarkBackground(b *testing.B) {
 	b.Run("Func", func(b *testing.B) {
 		b.ReportAllocs()
 		for i := 0; i < b.N; i++ {
-			Func("sync-inventory", func(ctx context.Context) {
+			Func("sync-inventory", func(ctx context.Context) error {
 				WithGroupAttrs(ctx, "inventoryService.sync",
 					slog.Int("syncedSkus", 42),
 					slog.Int64("durationMs", 12),
 				)
-				SetResult(ctx, "sync-inventory", nil)
+				return nil
 			})
 		}
 	})
@@ -730,10 +729,10 @@ func BenchmarkBackground(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			var wg sync.WaitGroup
 			wg.Add(1)
-			Go(parentCtx, "send-receipt-email", func(ctx context.Context) {
+			Go(parentCtx, "send-receipt-email", func(ctx context.Context) error {
 				defer wg.Done()
 				WithGroupField(ctx, "mailer", "template", "order-receipt")
-				SetResult(ctx, "send-receipt-email", nil)
+				return nil
 			})
 			wg.Wait()
 		}

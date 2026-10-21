@@ -40,7 +40,7 @@ func TestLoggingContract_APIEquivalence(t *testing.T) {
 		WithGroupField(ctx, "db.orders.insert", "table", "orders")
 		WithGroupField(ctx, "db.orders.insert", "durationMs", int64(4))
 
-		SetResult(ctx, "checkout-order", nil)
+		recordResult(ctx, "checkout-order", nil)
 	}
 
 	populateViaMapFields := func(ctx context.Context) {
@@ -65,7 +65,7 @@ func TestLoggingContract_APIEquivalence(t *testing.T) {
 			"table":      "orders",
 			"durationMs": int64(4),
 		})
-		SetResult(ctx, "checkout-order", nil)
+		recordResult(ctx, "checkout-order", nil)
 	}
 
 	populateViaAttrs := func(ctx context.Context) {
@@ -90,7 +90,7 @@ func TestLoggingContract_APIEquivalence(t *testing.T) {
 			slog.String("table", "orders"),
 			slog.Int64("durationMs", 4),
 		)
-		SetResult(ctx, "checkout-order", nil)
+		recordResult(ctx, "checkout-order", nil)
 	}
 
 	ctxSingle := NewContext(context.Background())
@@ -334,10 +334,8 @@ func TestLoggingContract_HTTPStackAllKeysPreserved(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(NewJSONHandler(&buf, nil))
 
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := HTTPHandler("checkout-order", func(w http.ResponseWriter, r *http.Request) error {
 		ctx := r.Context()
-		var err error
-		defer DeferResult(ctx, "checkout-order", &err)
 
 		WithField(ctx, "tenantId", "tnt_42")
 		WithAttrs(ctx, slog.String("region", "us-east-1"))
@@ -348,7 +346,7 @@ func TestLoggingContract_HTTPStackAllKeysPreserved(t *testing.T) {
 			slog.Int64("totalCents", 4999),
 		)
 
-		err = fmt.Errorf("checkout failed: %w", &codedError{
+		err := fmt.Errorf("checkout failed: %w", &codedError{
 			msg:      "card declined",
 			code:     "CARD_DECLINED",
 			category: "PAYMENT",
@@ -356,6 +354,7 @@ func TestLoggingContract_HTTPStackAllKeysPreserved(t *testing.T) {
 			cause:    errors.New("stripe: insufficient_funds"),
 		})
 		w.WriteHeader(http.StatusPaymentRequired)
+		return err
 	})
 
 	srv := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -437,7 +436,7 @@ func TestLoggingContract_ConsoleHandlerConcurrentIntegrity(t *testing.T) {
 					slog.Int("iter", i),
 					slog.String("tag", fmt.Sprintf("w%d_i%d", id, i)),
 				)
-				SetResult(ctx, "process-batch", nil)
+				recordResult(ctx, "process-batch", nil)
 				bag := BagFromContext(ctx)
 				logger.LogAttrs(ctx, LevelInfo, bag.Message(), bag.Attrs()...)
 			}
@@ -475,7 +474,7 @@ func TestAllocations(t *testing.T) {
 			WithGroupField(bgCtx, "a.b.c", "k", "v")
 			WithAttrs(bgCtx, slog.String("k", "v"))
 			WithGroupAttrs(bgCtx, "a.b.c", slog.String("k", "v"))
-			SetResult(bgCtx, "op", nil)
+			recordResult(bgCtx, "op", nil)
 		})
 		assert.Equal(t, float64(0), allocs, "no-op calls without FieldBag must not allocate")
 	})
