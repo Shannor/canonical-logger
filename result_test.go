@@ -195,33 +195,54 @@ func TestHTTPHandler_RecordsReturnedError(t *testing.T) {
 	assert.Equal(t, "process failed", errGroup["err"])
 }
 
-func TestFunc_ReturnsAndRecordsError(t *testing.T) {
+func TestRun_StandaloneFlushesAndReturnsError(t *testing.T) {
 	var got error
 	lines := captureBackground(t, func() {
-		got = Func("startup-migrations", func(ctx context.Context) error {
+		got = Run(context.Background(), "startup-migrations", func(ctx context.Context) error {
+			WithGroupField(ctx, "db.migrate", "applied", 3)
 			_, err := process(ctx)
 			return err
 		})
 	})
 	require.ErrorIs(t, got, errProcess)
 	require.Len(t, lines, 1)
+	assert.Equal(t, "startup-migrations", lines[0]["job"])
 	assert.Equal(t, "startup-migrations-failure", lines[0]["message"])
 	assert.Equal(t, "ERROR", lines[0]["level"])
+	assert.NotEmpty(t, lines[0]["latency"])
+	dbGrp := lines[0]["db"].(map[string]any)["migrate"].(map[string]any)
+	assert.Equal(t, float64(3), dbGrp["applied"])
 }
 
-func TestFunc_PanicRecordedThenPropagates(t *testing.T) {
+func TestRun_StandalonePanicFlushesThenPropagates(t *testing.T) {
 	lines := captureBackground(t, func() {
 		assert.Panics(t, func() {
-			_ = Func("boom-task", func(context.Context) error { panic("boom") })
+			_ = Run(context.Background(), "boom-task", func(context.Context) error { panic("boom") })
 		})
 	})
 	require.Len(t, lines, 1, "canonical line must still be flushed")
 	assert.Equal(t, "boom-task-failure", lines[0]["message"])
 }
 
-func TestCronFunc_RecordsSuccess(t *testing.T) {
+func TestRunValue_StandaloneFlushes(t *testing.T) {
+	var got int
+	var gotErr error
 	lines := captureBackground(t, func() {
-		CronFunc("sync", func(context.Context) error { return nil })()
+		got, gotErr = RunValue(context.Background(), "get-user", func(ctx context.Context) (int, error) {
+			WithGroupField(ctx, "request", "userId", "usr_1")
+			return 42, nil
+		})
+	})
+	require.NoError(t, gotErr)
+	assert.Equal(t, 42, got)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "get-user-success", lines[0]["message"])
+	assert.Equal(t, "usr_1", lines[0]["request"].(map[string]any)["userId"])
+}
+
+func TestRunFunc_RecordsSuccess(t *testing.T) {
+	lines := captureBackground(t, func() {
+		RunFunc("sync", func(context.Context) error { return nil })()
 	})
 	require.Len(t, lines, 1)
 	assert.Equal(t, "sync-success", lines[0]["message"])
@@ -257,16 +278,36 @@ func TestRun_NestedOuterOwnsEventAndFailureIsSticky(t *testing.T) {
 		return Run(ctx, "inner", func(context.Context) error { return nil })
 	})
 	assert.Equal(t, "outer-success", BagFromContext(ctx2).Message())
+
+	// Standalone nested Run without pre-existing bag flushes once at the outer boundary.
+	lines := captureBackground(t, func() {
+		_ = Run(context.Background(), "outer-standalone", func(ctx context.Context) error {
+			return Run(ctx, "inner-standalone", func(ctx context.Context) error {
+				WithField(ctx, "step", "done")
+				return nil
+			})
+		})
+	})
+	require.Len(t, lines, 1)
+	assert.Equal(t, "outer-standalone-success", lines[0]["message"])
+	assert.Equal(t, "done", lines[0]["step"])
 }
 
-// TestHTTPHandler_NoBagIsNoOp verifies HTTPHandler does not depend on HTTPMiddleware:
-// without a FieldBag on the request context it simply serves the request.
-func TestHTTPHandler_NoBagIsNoOp(t *testing.T) {
+// TestHTTPHandler_WithoutMiddlewareStillFlushes verifies HTTPHandler does not depend on
+// HTTPMiddleware: without a FieldBag on the request context, Run opens one and flushes
+// the canonical log line when the handler returns.
+func TestHTTPHandler_WithoutMiddlewareStillFlushes(t *testing.T) {
 	h := HTTPHandler("no-bag", func(w http.ResponseWriter, r *http.Request) error {
+		WithGroupField(r.Context(), "request", "tea", true)
 		w.WriteHeader(http.StatusTeapot)
 		return errProcess
 	})
 	rec := httptest.NewRecorder()
-	assert.NotPanics(t, func() { h.ServeHTTP(rec, httptest.NewRequest("GET", "/x", nil)) })
+	lines := captureBackground(t, func() {
+		assert.NotPanics(t, func() { h.ServeHTTP(rec, httptest.NewRequest("GET", "/x", nil)) })
+	})
 	assert.Equal(t, http.StatusTeapot, rec.Code)
+	require.Len(t, lines, 1)
+	assert.Equal(t, "no-bag-failure", lines[0]["message"])
+	assert.Equal(t, true, lines[0]["request"].(map[string]any)["tea"])
 }

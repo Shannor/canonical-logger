@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // ErrorFormatter extracts structured metadata fields from an error for the "error" group.
@@ -84,25 +86,34 @@ func unwrapRootCause(err error) error {
 	}
 }
 
-// Run executes fn as a boundary operation and records its returned error as the
-// outcome of the canonical log line:
+// Run executes fn as a unit-of-work boundary operation, recording its returned error as
+// the outcome of the canonical log line:
 //
 //   - fn returns nil:     message becomes "<baseEvent>-success".
 //   - fn returns an error: message becomes "<baseEvent>-failure", the line escalates to
 //     ERROR, and the "error" group is populated via the active ErrorFormatter.
 //
+// If ctx does not already carry a FieldBag (for example, when no HTTP/RPC middleware is
+// installed, or in a standalone task, CLI command, or consumer), Run opens a fresh
+// FieldBag on the ctx passed to fn and flushes the canonical log line (with "job" and
+// "latency") when fn returns. If ctx already carries a FieldBag (opened by HTTPMiddleware,
+// a router middleware, Go, or an enclosing Run), Run records the outcome on that existing
+// bag and lets the outermost owner flush once at boundary exit.
+//
 // Run is the single primitive for recording outcomes. Because the outcome is taken from
 // fn's return value rather than from a captured variable, := shadowing inside fn cannot
 // produce a false success. Use it at boundary layers only (API handlers, webhooks,
-// consumers, RPC handlers); Go, Func, CronFunc and HTTPHandler are built on it.
+// consumers, RPC handlers, synchronous tasks); Go, RunFunc, RunValue, and HTTPHandler
+// are built on it.
 //
 // Failure is sticky: if a failure was already recorded on the bag (e.g. by a nested Run)
 // or an "error" group was attached (e.g. by a router adapter), a nil result does not
 // downgrade the line to "-success". When Runs are nested, the outermost Run owns the
 // event name.
 //
-// If fn panics, the panic is recorded as a failure and then re-panicked so upstream
-// recovery (http.Server, Go, cron schedulers) behaves as before.
+// If fn panics, the panic is recorded as a failure (and flushed if Run opened the bag)
+// and then re-panicked so upstream recovery (http.Server, Go, cron schedulers) behaves
+// as before.
 //
 //	func (api API) Create(c *gin.Context) {
 //		_ = clog.Run(c.Request.Context(), "create-campaign", func(ctx context.Context) error {
@@ -115,14 +126,51 @@ func unwrapRootCause(err error) error {
 //		})
 //	}
 func Run(ctx context.Context, baseEvent string, fn func(ctx context.Context) error) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var (
+		ownBag *FieldBag
+		start  time.Time
+	)
+	if BagFromContext(ctx) == nil {
+		start = time.Now()
+		ctx = NewContext(ctx)
+		ownBag = BagFromContext(ctx)
+	}
 	defer func() {
 		if r := recover(); r != nil {
 			recordResult(ctx, baseEvent, panicError(baseEvent, r))
+			if ownBag != nil {
+				flushBag(ctx, ownBag, baseEvent, start)
+			}
 			panic(r)
 		}
 		recordResult(ctx, baseEvent, err)
+		if ownBag != nil {
+			flushBag(ctx, ownBag, baseEvent, start)
+		}
 	}()
 	return fn(ctx)
+}
+
+func flushBag(ctx context.Context, bag *FieldBag, name string, start time.Time) {
+	latency := time.Since(start)
+	logger := LoggerFromContext(ctx)
+	level := slog.LevelInfo
+	if bag.hasGroup("error") {
+		level = slog.LevelError
+	} else if bag.hasWarning() {
+		level = slog.LevelWarn
+	}
+
+	baseAttrs := [2]slog.Attr{
+		slog.String("job", name),
+		slog.String("latency", latency.String()),
+	}
+	attrs := bag.appendAttrs(baseAttrs[:])
+
+	logger.LogAttrs(ctx, level, bag.Message(), attrs...)
 }
 
 // RunValue is the value-returning form of Run, convenient for RPC handlers:
@@ -160,7 +208,11 @@ type HTTPHandlerFunc func(w http.ResponseWriter, r *http.Request) error
 //	}))
 func HTTPHandler(baseEvent string, fn HTTPHandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = Run(r.Context(), baseEvent, func(context.Context) error {
+		rCtx := r.Context()
+		_ = Run(rCtx, baseEvent, func(ctx context.Context) error {
+			if ctx != rCtx {
+				r = r.WithContext(ctx)
+			}
 			return fn(w, r)
 		})
 	})

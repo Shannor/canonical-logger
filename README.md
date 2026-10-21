@@ -20,12 +20,12 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 - **Hierarchical Groups**: Organize context cleanly using nested JSON objects with dot-separated paths (e.g. `clog.WithGroupField(ctx, "db.getOrder", "rows", 1)`).
 - **Strongly-Typed `slog.Attr` & `LogValuer` Support**: Fast-path `WithAttrs` and `WithGroupAttrs` helpers plus automatic `slog.LogValuer` evaluation for custom type serialization and PII redaction.
 - **Standard `net/http` Middlewares**: Built-in `HTTPMiddleware` and `HTTPTraceMiddleware` compatible with Go 1.22+ `http.ServeMux`, Chi, Gorilla Mux, and any `http.Handler`.
-- **Shadow-Proof Unit-of-Work Result Tracking**: Outcomes are derived from return values via `clog.Run`, `clog.RunValue`, `clog.HTTPHandler`, `clog.Go`, `clog.Func`, and `clog.CronFunc`—ergonomically shaped like `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`. Returning `nil` records `<event>-success`; returning an error or panicking records `<event>-failure` while preserving every field accumulated before the error, so `:=` shadowing can never log a false success. Failures are sticky.
+- **Shadow-Proof Unit-of-Work Result Tracking**: Outcomes are derived from return values via `clog.Run`, `clog.RunValue`, `clog.RunFunc`, `clog.HTTPHandler`, and `clog.Go`—ergonomically shaped like `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`. Returning `nil` records `<event>-success`; returning an error or panicking records `<event>-failure` while preserving every field accumulated before the error, so `:=` shadowing can never log a false success. Failures are sticky.
 - **Rich Boundary Error Tracking**: Failures automatically record error details, unwrap root causes, extract `Code()` / `Category()` / `ErrorFields()` metadata via pluggable `ErrorFormatter`, and format outcome messages (`<event>-success`, `<event>-failure`).
 - **Async & Background Support**:
   - `clog.Go`: Spawns detached goroutines with panic recovery, independent log sessions, logger propagation, and parent `FieldBag` correlation.
-  - `clog.Func`: Synchronous tasks with automatic latency and line emission.
-  - `clog.CronFunc`: Wraps scheduled jobs for cron runners.
+  - `clog.Run`: Synchronous unit-of-work boundary with automatic `FieldBag` creation and line emission when no middleware is active.
+  - `clog.RunFunc`: Wraps a `func(ctx) error` into a zero-argument `func()` for cron schedulers and callbacks.
 - **Adaptive & Contextual Level Sampling**: `NewSamplingHandler` and `NewSamplingHandlerWithEvaluator` guarantee 100% capture of Warnings, Errors, Fatal, and Panics while sampling high-volume Info/Debug/Trace traffic by rate or custom context predicates.
 - **Local Dev Console & Cloud Logging Ready**:
   - `NewConsoleHandler` for colorized, human-readable local terminal output.
@@ -55,10 +55,10 @@ import "github.com/Shannor/canonical-logger/pkg/clog"
 
 `clog` scopes every canonical log line to a single **Unit of Work** across four phases:
 
-1. **Open Unit of Work (`NewContext`)**: Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a background runner (`Go`, `Func`, `CronFunc`) attaches a fresh, thread-safe `FieldBag` to `context.Context`.
+1. **Open Unit of Work (`NewContext`)**: Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a boundary runner (`Run`, `RunFunc`, `Go`) attaches a fresh, thread-safe `FieldBag` to `context.Context`.
 2. **Accumulate (`WithGroupFields` / `WithAttrs`)**: Handlers, services, and DAOs enrich their respective namespace groups as work progresses, without emitting premature log lines or passing logger instances.
 3. **Record Outcome (`Run` / `RunValue` / `HTTPHandler`)**: The boundary wrapper captures the function's returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure`, extracts structured error details via `ErrorFormatter`, and marks the failure as sticky so outer wrappers cannot downgrade it—all while preserving every field accumulated before the failure.
-4. **Emit (`LogAttrs` at Boundary Exit)**: When the outermost middleware or task runner finishes, it inspects the finalized `FieldBag` and emits one canonical wide event.
+4. **Emit (`LogAttrs` at Boundary Exit)**: When the outermost middleware or `Run` / `RunFunc` / `Go` boundary finishes, it inspects the finalized `FieldBag` and emits one canonical wide event.
 
 ### When to Use `clog` vs. Standard `log/slog`
 
@@ -69,7 +69,7 @@ Instead, choose the right tool based on whether you are inside a **Unit of Work*
 | Scenario | Example | What to Use |
 | :--- | :--- | :--- |
 | **1. Process lifecycle event** (no Unit of Work) | `"server listening on :8080"`, `"SIGTERM received, draining"`, `"loaded config"` | **Use standard `slog.Info` / `slog.Error` directly.** Because `slog.SetDefault` is configured with `clog.NewJSONHandler` or `clog.NewConsoleHandler` at startup, standalone `slog` calls automatically share the same JSON schema (`"message"`, `"severity"`) and console formatting. |
-| **2. One-off synchronous operation** | Running DB migrations at startup, seeding data, or executing a CLI command | **Use `clog.Func("run-migrations", func(ctx) error { ... })`.** Emits one self-contained wide event with `latency`, `-success` / `-failure`, and any fields enriched by downstream DAOs/services. |
+| **2. One-off synchronous operation** | Running DB migrations at startup, seeding data, or executing a CLI command | **Use `clog.Run(ctx, "run-migrations", func(ctx) error { ... })`.** Opens a `FieldBag` and emits one self-contained wide event with `latency`, `-success` / `-failure`, and any fields enriched by downstream DAOs/services. |
 | **3. Inside an active request or task** | `"cache miss"`, `"rate limit near threshold"`, `"retrying provider"` | **Do not emit a separate log line.** Enrich the active Unit of Work via `clog.WithGroupField(ctx, "billingService.charge", "cacheHit", false)` (or add a `"warning"` field to escalate the wide event to `WARN`). |
 
 ### Layer Ownership
@@ -82,7 +82,7 @@ Canonical logging relies on a clear separation of concerns across application la
 | **Boundary (API / Webhooks)** | `HTTPHandler()`, `Run()`, `RunValue()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the canonical event name (`-success` / `-failure`), adds request input parameters & query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. **MUST NOT** set event names or touch the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). **MUST NOT** set event names or touch `"error"`. Returns standard Go errors. |
-| **Background / Cron** | `clog.Go()`, `clog.CronFunc()`, `clog.Func()` | `job` / `request` | Spawns isolated execution contexts with independent FieldBags, correlates with parent snapshots, and recovers from panics. |
+| **Background / Cron** | `clog.Go()`, `clog.RunFunc()`, `clog.Run()` | `job` / `request` | Spawns isolated execution contexts with independent FieldBags, correlates with parent snapshots, and recovers from panics. |
 
 ---
 
@@ -256,7 +256,7 @@ func (d orderDAO) CreateOrder(ctx context.Context, req CheckoutRequest) (*models
 
 ### How Results Are Recorded
 
-Boundary layers wrap their unit of work in `clog.Run` (or a wrapper built on it: `HTTPHandler`, `RunValue`, `Go`, `Func`, `CronFunc`). The **returned error** determines the outcome of the wide event:
+Boundary layers wrap their unit of work in `clog.Run` (or a wrapper built on it: `HTTPHandler`, `RunValue`, `RunFunc`, `Go`). The **returned error** determines the outcome of the wide event:
 - On success (`err == nil`): The message is set to `"<event>-success"`.
 - On failure (`err != nil` or panic): The message is set to `"<event>-failure"`, the canonical log escalates to `ERROR` level, and the `"error"` group is populated via `DefaultErrorFormatter` (or a custom `ErrorFormatter` configured with `clog.SetErrorFormatter`), preserving all fields accumulated across earlier steps.
 
@@ -286,9 +286,9 @@ There is no `SetResult` / `DeferResult`: an outcome can only come from a functio
 | Boundary | Use |
 | --- | --- |
 | `net/http`, ServeMux, Chi | `clog.HTTPHandler("event", func(w, r) error)` |
-| Gin / Echo / webhook / consumer | `err := clog.Run(ctx, "event", func(ctx) error)` |
+| Gin / Echo / webhook / consumer / startup task | `err := clog.Run(ctx, "event", func(ctx) error)` |
 | gRPC / RPC returning a value | `return clog.RunValue(ctx, "event", func(ctx) (T, error))` |
-| Goroutine / startup task / cron | `clog.Go`, `clog.Func`, `clog.CronFunc` (the task name is the event name) |
+| Goroutine / zero-arg closure (cron, callbacks) | `clog.Go`, `clog.RunFunc` (the task name is the event name) |
 
 ```go
 // net/http: the returned error IS the result.
@@ -505,23 +505,23 @@ clog.Go(ctx, "send-welcome-email", func(bgCtx context.Context) error {
 })
 ```
 
-### `clog.Func`: Synchronous Task
+### `clog.Run`: Synchronous Task
 
-Runs a synchronous block with its own canonical logging context:
+When called with a context that does not already carry a `FieldBag` (no outer HTTP/RPC middleware), `clog.Run` opens a `FieldBag` and automatically flushes the canonical log line when `fn` returns:
 
 ```go
-if err := clog.Func("startup-migrations", runMigrations); err != nil {
+if err := clog.Run(ctx, "startup-migrations", runMigrations); err != nil {
     os.Exit(1)
 }
 ```
 
-### `clog.CronFunc`: Scheduled Job
+### `clog.RunFunc`: Zero-Argument Closure (Cron / Callbacks)
 
-Wraps a function for use with cron job schedulers (such as `robfig/cron`):
+Wraps a `func(ctx context.Context) error` into a `func()` for cron schedulers (such as `robfig/cron`) or callbacks:
 
 ```go
 c := cron.New()
-c.AddFunc("@hourly", clog.CronFunc("sync-subscriptions", syncService.Sync))
+c.AddFunc("@hourly", clog.RunFunc("sync-subscriptions", syncService.Sync))
 ```
 
 ---

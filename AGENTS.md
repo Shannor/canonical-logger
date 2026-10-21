@@ -13,8 +13,8 @@ All code authored, edited, or reviewed by agents MUST adhere strictly to the gui
 Rather than scattering multiple `log.Info()` or `log.Debug()` side effects across handlers, services, and DAOs, `clog` implements the **Canonical Log Line / Wide Event** pattern scoped to a **Unit of Work**:
 - **One Wide Event Per Unit of Work**: Exactly one structured JSON log line is emitted per HTTP request, RPC call, consumed message, or background task lifecycle.
 - **Context Accumulation (`FieldBag`)**: Transport middleware or a task runner opens a thread-safe `FieldBag` (the unit of work) attached to `context.Context`. Metadata is accumulated in the `FieldBag` as execution traverses the stack.
-- **Return-Value Outcome Boundary (`clog.Run`)**: Boundary wrappers (`HTTPHandler`, `Run`, `RunValue`, `Go`, `Func`, `CronFunc`) capture the unit of work's outcome from the returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure` with sticky failure semantics, preserving all fields accumulated before the error.
-- **Emission at the Boundary**: The canonical wide event is emitted once at the end of the request by `clog.HTTPMiddleware` (or a custom router middleware built on `clog`'s Ports—see `docs/adapters.md`), or upon task exit by `clog.Go` / `clog.Func` / `clog.CronFunc`.
+- **Return-Value Outcome Boundary (`clog.Run`)**: Boundary wrappers (`HTTPHandler`, `Run`, `RunValue`, `RunFunc`, `Go`) capture the unit of work's outcome from the returned `error`: `nil` records `<event>-success`, while a non-nil error (or panic) records `<event>-failure` with sticky failure semantics, preserving all fields accumulated before the error.
+- **Emission at the Boundary**: The canonical wide event is emitted once at the end of the request by `clog.HTTPMiddleware` (or a custom router middleware built on `clog`'s Ports—see `docs/adapters.md`), or automatically upon exit by `clog.Run` (when no outer middleware opened a `FieldBag`), `clog.RunFunc`, and `clog.Go`.
 - **Zero Passing of Logger Instances**: Domain services and DAOs only need `context.Context` to enrich logs. Never pass logger instances through function signatures.
 - **100% Zero-Dependency Core**: `github.com/Shannor/canonical-logger` is a pure Go standard-library package (`log/slog`, `context`, `net/http`). Third-party router middlewares (Gin, Echo, gRPC), `ContextResolver` hooks (`oapi-codegen`), and custom SDK writers (`GCPWriter`) live in userland using the Ports documented in `docs/adapters.md`.
 
@@ -22,7 +22,7 @@ Rather than scattering multiple `log.Info()` or `log.Debug()` side effects acros
 
 `clog` intentionally provides no `clog.Info()` or `clog.Error()` point-logging functions so inner layers cannot scatter ad-hoc log lines during a request:
 1. **Process Lifecycle Events (No Unit of Work)**: For startup/shutdown logs in `main()` (e.g. `"server listening on :8080"`, `"SIGTERM received"`), call standard `slog.Info()` / `slog.Error()` directly. They automatically use the `clog.NewJSONHandler` or `clog.NewConsoleHandler` configured on `slog.SetDefault`.
-2. **One-Off Synchronous Tasks**: For standalone operations like startup migrations or CLI commands, wrap them in `clog.Func("startup-migrations", func(ctx context.Context) error { ... })` to emit a single wide event with latency and outcome.
+2. **One-Off Synchronous Tasks**: For standalone operations like startup migrations or CLI commands, wrap them in `clog.Run(ctx, "startup-migrations", func(ctx context.Context) error { ... })` to open a `FieldBag` and automatically flush a single wide event with latency and outcome on return.
 3. **Inside an Active Request or Background Task**: **NEVER** call `slog.Info()` / `slog.Warn()` / `slog.Error()` inside handlers, services, or DAOs. Always attach fields to the active `FieldBag` via `clog.WithGroupFields()` / `clog.WithGroupField()`.
 
 ---
@@ -37,7 +37,7 @@ Every layer in the application has strict boundaries regarding what it may and m
 | **Boundary (API / Webhook Handlers)** | `HTTPHandler()`, `Run()`, `RunValue()`, `WithGroupFields()`, `WithGroupAttrs()` | `request` | Owns the event name (`-success` / `-failure`), captures request payload metadata and query filters (`request`). |
 | **Service Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<serviceName>.<methodName>` | Records business execution details. MUST NOT set event names or populate the `"error"` group. Returns standard Go errors. |
 | **DAO / DB Layer** | `WithGroupFields()`, `WithGroupField()`, `WithGroupAttrs()` | `<daoName>.<methodName>` or `db.<methodName>` | Records query metadata (`table`, `rowsReturned`, `durationMs`). MUST NOT set event names or populate `"error"`. Returns standard Go errors. |
-| **Background / Cron** | `clog.Go()`, `clog.CronFunc()`, `clog.Func()` | `job` / `request` | Spawns isolated contexts with fresh FieldBags, correlates with parent snapshots, and handles panic recovery. |
+| **Background / Cron** | `clog.Go()`, `clog.RunFunc()`, `clog.Run()` | `job` / `request` | Spawns isolated contexts with fresh FieldBags, correlates with parent snapshots, and handles panic recovery. |
 
 ---
 
@@ -91,9 +91,9 @@ Groups are emitted as nested JSON objects in the canonical log line. Group names
   | Boundary | API |
   | --- | --- |
   | `net/http` handler | `clog.HTTPHandler(event, func(w, r) error)` |
-  | Framework handler (Gin, Echo), webhook, consumer | `clog.Run(ctx, event, func(ctx) error) error` |
+  | Framework handler (Gin, Echo), webhook, consumer, sync task | `clog.Run(ctx, event, func(ctx) error) error` |
   | RPC handler returning a value | `clog.RunValue(ctx, event, func(ctx) (T, error)) (T, error)` |
-  | Goroutine / sync task / cron | `clog.Go`, `clog.Func`, `clog.CronFunc` (all take `func(ctx) error`) |
+  | Goroutine / zero-arg closure (cron, callbacks) | `clog.Go`, `clog.RunFunc` (both take `func(ctx) error`) |
 
 - There is no `SetResult` / `DeferResult`. Never emulate them (e.g. via `WithMessage(ctx, "x-failure")` or a captured `err` variable).
 - Failure is **sticky**: a `nil` result never downgrades an earlier failure or an existing `"error"` group.
@@ -106,7 +106,7 @@ Groups are emitted as nested JSON objects in the canonical log line. Group names
 - The wrapper automatically appends `-success` or `-failure`:
   - returned `nil` -> `create-campaign-success`
   - returned error -> `create-campaign-failure` (escalates log level to `ERROR` and sets `error.err`).
-- For `Go` / `Func` / `CronFunc` the task name is the event name.
+- For `Go` / `RunFunc` / standalone `Run` the task name is the event name.
 
 ### Why There Is No `DeferResult` (The Shadowing Gotcha)
 
@@ -232,11 +232,11 @@ func (api CampaignAPI) SendAsync(c *gin.Context) {
 }
 ```
 
-### 5. Scheduled Cron Jobs (`clog.CronFunc`)
+### 5. Scheduled Cron Jobs / Callbacks (`clog.RunFunc`)
 
 ```go
 func RegisterCronJobs(c *cron.Cron, svc CampaignService) {
-    c.AddFunc("@hourly", clog.CronFunc("sync-campaign-metrics-cron", svc.SyncMetrics))
+    c.AddFunc("@hourly", clog.RunFunc("sync-campaign-metrics-cron", svc.SyncMetrics))
 }
 ```
 
@@ -246,7 +246,7 @@ func RegisterCronJobs(c *cron.Cron, svc CampaignService) {
 
 Before completing any task that modifies or adds logging code, verify the following:
 
-- [ ] **Boundary Layer Ownership**: Only API handlers, background tasks, and cron functions record results, via exactly one wrapper (`HTTPHandler`, `Run`, `RunValue`, `Go`, `Func`, `CronFunc`).
+- [ ] **Boundary Layer Ownership**: Only API handlers, background tasks, and cron functions record results, via exactly one wrapper (`HTTPHandler`, `Run`, `RunValue`, `RunFunc`, `Go`).
 - [ ] **Return-Value Results**: Every error path inside a wrapper `return`s the error. No error path writes a failure response and then returns `nil`.
 - [ ] **No Ad-Hoc `slog` Calls in Request/Task Paths**: Handlers, services, and DAOs do NOT call `slog.Info`, `slog.Warn`, or `slog.Error` during a Unit of Work; `slog.*` is reserved for process lifecycle events (`main()` startup/shutdown).
 - [ ] **No Error Grouping in Inner Layers**: Services and DAOs do NOT call `clog.WithGroupFields(ctx, "error", ...)`. They return wrapped Go errors.

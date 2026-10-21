@@ -11,7 +11,7 @@ Traditional application logging treats logging as an **immediate side effect**: 
 `canonical-logger` (`clog`) instead implements the **Canonical Log Line / Wide Event** pattern scoped to a **Unit of Work**:
 - Every HTTP request, RPC call, consumed message, cron execution, or background job is a single **Unit of Work** backed by an isolated `*clog.FieldBag` on `context.Context`.
 - Domain and infrastructure layers enrich the active `FieldBag` as execution traverses the stack, without emitting I/O side effects or knowing how the event will be transported.
-- Boundary wrappers (`clog.Run`, `clog.RunValue`, `clog.HTTPHandler`, `clog.Go`, `clog.Func`, `clog.CronFunc`) wrap the unit of work's execution (ergonomically shaped like `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`) and record its outcome (`<event>-success` vs `<event>-failure`) strictly from the returned `error`.
+- Boundary wrappers (`clog.Run`, `clog.RunValue`, `clog.RunFunc`, `clog.HTTPHandler`, `clog.Go`) wrap the unit of work's execution (ergonomically shaped like `errgroup.Go` or `db.RunInTx(ctx, func(ctx) error)`) and record its outcome (`<event>-success` vs `<event>-failure`) strictly from the returned `error`.
 - Unlike a database transaction—which discards state on failure—a failed Unit of Work **preserves every field accumulated up to the point of failure** and guarantees 100% retention under `SamplingHandler`.
 - When the outermost boundary exits, the transport middleware or task runner emits the finalized `FieldBag` as a single wide `slog` event.
 
@@ -31,8 +31,8 @@ Traditional application logging treats logging as an **immediate side effect**: 
 ### The 4-Phase Unit of Work Lifecycle
 
 1. **Open (`clog.NewContext`)**:
-   - Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a background runner (`Go`, `Func`, `CronFunc`) initializes a fresh, mutex-guarded `*FieldBag` on `context.Context`.
-   - If no `FieldBag` is present in `ctx`, all `clog.With*` and `clog.Run` calls are safe no-ops, so domain services remain decoupled from transport setup in unit tests.
+   - Transport middleware (`HTTPMiddleware`, Gin/gRPC interceptors) or a boundary runner (`Run`, `RunFunc`, `Go`) initializes a fresh, mutex-guarded `*FieldBag` on `context.Context`.
+   - If no `FieldBag` is present in `ctx` when `clog.Run` is called, `Run` opens one and flushes the canonical log line when `fn` returns. If no `FieldBag` is present when `clog.With*` is called directly, it is a safe no-op, so domain services remain decoupled from transport setup in unit tests.
 2. **Accumulate (`clog.WithGroupFields`, `clog.WithGroupAttrs`, etc.)**:
    - Each architectural layer writes to its owned namespace (`actor`, `request`, `<service>.<method>`, `<dao>.<method>`).
    - Values are held in memory inside the `FieldBag` and converted to `[]slog.Attr` only once at emission time.
@@ -47,7 +47,7 @@ Traditional application logging treats logging as an **immediate side effect**: 
 
 `clog` deliberately omits ad-hoc emission functions (`clog.Info`, `clog.Error`) so application layers cannot bypass the Unit of Work model:
 - **Process lifecycle events** outside a Unit of Work (server startup, listening port, graceful shutdown signals) use standard `slog.Info` / `slog.Error` directly, which routes through the `clog.NewJSONHandler` or `clog.NewConsoleHandler` installed on `slog.SetDefault`.
-- **One-off synchronous operations** (such as startup migrations) use `clog.Func(name, fn)` to open, record, and emit a self-contained Unit of Work.
+- **One-off synchronous operations** (such as startup migrations) use `clog.Run(ctx, name, fn)` to open, record, and emit a self-contained Unit of Work.
 - **In-flight diagnostics** inside a request or task are attached to the active `FieldBag` via `clog.WithGroupField(s)` rather than emitted as separate log lines.
 
 ---
@@ -61,8 +61,8 @@ github.com/Shannor/canonical-logger (Pure Go Standard Library)
 ├── clog.go                 # Extended log levels, SamplingHandler, SampleEvaluator, NewJSONHandler, GCPReplaceAttr
 ├── console_handler.go      # Colorized human-readable ConsoleHandler for local development
 ├── fieldbag.go             # Thread-safe FieldBag, ContextResolver port, WithField(s)/WithAttrs helpers
-├── result.go               # Run, RunValue, HTTPHandler (return-value results), pluggable ErrorFormatter & DefaultErrorFormatter
-├── background.go           # Detached goroutines (Go), sync tasks (Func), scheduled jobs (CronFunc)
+├── result.go               # Run, RunValue, HTTPHandler (return-value results & standalone flush), ErrorFormatter
+├── background.go           # Detached goroutines (Go) and zero-arg closures (RunFunc)
 ├── middleware.go           # Standard net/http HTTPMiddleware
 ├── trace.go                # HTTPTraceMiddleware & exported ExtractTrace port
 └── pkg/clog/               # Drop-in alias package re-exporting root symbols
@@ -105,4 +105,4 @@ Custom router and RPC middlewares (Gin, Echo, Fiber, gRPC, message consumers) in
 
 ### Port 4: `ErrorFormatter` & `SetErrorFormatter`
 
-Boundary layers wrap their work in `clog.Run(ctx, "event-name", fn)` (or `RunValue`, `HTTPHandler`, `Go`, `Func`, `CronFunc`, all built on `Run`). The outcome is derived from `fn`'s **returned error**, never from a captured variable (see ADR-0002). When the returned error is non-nil, `clog` invokes the configured `ErrorFormatter` (`DefaultErrorFormatter` by default) to populate the `"error"` group with `"err"`, unwrapped root `"cause"`, `"code"`, `"category"`, and `ErrorFields()`.
+Boundary layers wrap their work in `clog.Run(ctx, "event-name", fn)` (or `RunValue`, `RunFunc`, `HTTPHandler`, `Go`, all built on `Run`). The outcome is derived from `fn`'s **returned error**, never from a captured variable (see ADR-0002). When the returned error is non-nil, `clog` invokes the configured `ErrorFormatter` (`DefaultErrorFormatter` by default) to populate the `"error"` group with `"err"`, unwrapped root `"cause"`, `"code"`, `"category"`, and `ErrorFields()`.

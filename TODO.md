@@ -24,7 +24,7 @@ Currently, the root package `github.com/Shannor/canonical-logger` directly impor
   - Removed in favor of `github.com/Shannor/canonical-logger` and `pkg/clog`.
   - Ensure zero references to `xlog` remain in the core codebase.
 - [x] **Return-Value Result Flow** ([ADR-0002](docs/adr/0002-return-value-result-flow.md)):
-  - Removed `SetResult` / `DeferResult`. Outcomes come only from return values via `Run`, `RunValue`, `HTTPHandler`, and the upgraded `Go` / `Func` / `CronFunc` (`func(ctx) error`).
+  - Removed `SetResult`, `DeferResult`, and `Func`, and renamed `CronFunc` to `RunFunc`. Outcomes come only from return values via `Run` (which also opens and flushes a `FieldBag` when no outer middleware is active), `RunValue`, `RunFunc`, `HTTPHandler`, and `Go` (`func(ctx) error`).
 - [ ] **Move HTTP Middleware Out of Core into Recipes**:
   - Migrate `HTTPMiddleware` / `HTTPTraceMiddleware` emission logic to copy-pasteable `net/http` recipes in `docs/adapters.md`, matching the Gin / Echo / gRPC recipes.
   - Core keeps only the Ports (`NewContext`, `BagFromContext`, `HasGroup`, `HasWarning`, `Message`, `Attrs`, `ExtractTrace`, `Run`).

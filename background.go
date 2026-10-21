@@ -11,8 +11,7 @@ import (
 // NewBackground creates a fresh canonical log context for use outside of HTTP requests.
 // Returns a context with a FieldBag attached and a flush func.
 // The flush func emits the canonical log line and is safe to call multiple times (only emits once).
-// Prefer CronFunc, Func and Go over calling this directly. If you do use it, record the
-// outcome with Run.
+// Prefer Run, RunFunc, and Go over calling this directly.
 func NewBackground(name string) (context.Context, func()) {
 	return newBackground(context.Background(), name)
 }
@@ -29,47 +28,20 @@ func newBackground(parentCtx context.Context, name string) (context.Context, fun
 	var once sync.Once
 	flush := func() {
 		once.Do(func() {
-			latency := time.Since(start)
-			logger := LoggerFromContext(ctx)
-			level := slog.LevelInfo
-			if bag.hasGroup("error") {
-				level = slog.LevelError
-			} else if bag.hasWarning() {
-				level = slog.LevelWarn
-			}
-
-			baseAttrs := [2]slog.Attr{
-				slog.String("job", name),
-				slog.String("latency", latency.String()),
-			}
-			attrs := bag.appendAttrs(baseAttrs[:])
-
-			logger.LogAttrs(ctx, level, bag.Message(), attrs...)
+			flushBag(ctx, bag, name, start)
 		})
 	}
 	return ctx, flush
 }
 
-// Func runs fn synchronously with its own canonical logging session and returns fn's
-// error. The returned error is recorded as the outcome for name ("<name>-success" /
-// "<name>-failure"), and the canonical log line is flushed when fn returns. Use for
-// one-off synchronous tasks that are not cron jobs or goroutines (e.g. startup tasks):
-//
-//	if err := clog.Func("startup-migrations", migrate); err != nil {
-//		os.Exit(1)
-//	}
-func Func(name string, fn func(ctx context.Context) error) error {
-	ctx, flush := NewBackground(name)
-	defer flush()
-	return Run(ctx, name, fn)
-}
-
-// CronFunc wraps fn for use as a cron job body. Returns a func() compatible with
-// cron.FuncJob or direct invocation. fn's returned error is recorded as the outcome for
-// name, and the canonical log line is flushed when fn returns.
-func CronFunc(name string, fn func(ctx context.Context) error) func() {
+// RunFunc wraps fn in a zero-argument func() that executes Run with a fresh
+// background context on each invocation. Useful for schedulers, cron runners
+// (e.g. robfig/cron), hooks, or callbacks that expect a func().
+// fn's returned error is recorded as the outcome for name, and the canonical log line
+// is flushed when fn returns.
+func RunFunc(name string, fn func(ctx context.Context) error) func() {
 	return func() {
-		_ = Func(name, fn)
+		_ = Run(context.Background(), name, fn)
 	}
 }
 

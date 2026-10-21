@@ -30,4 +30,11 @@ func TestPkgClog_Forwarding(t *testing.T) {
 	v, err := clog.RunValue(ctx, "task", func(context.Context) (int, error) { return 7, nil })
 	require.NoError(t, err)
 	assert.Equal(t, 7, v)
+
+	ranFunc := false
+	clog.RunFunc("closure-task", func(context.Context) error {
+		ranFunc = true
+		return nil
+	})()
+	assert.True(t, ranFunc)
 }

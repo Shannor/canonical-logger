@@ -709,10 +709,12 @@ func BenchmarkBackground(b *testing.B) {
 		}
 	})
 
-	b.Run("Func", func(b *testing.B) {
+	b.Run("Run_StandaloneFlush", func(b *testing.B) {
+		bgCtx := context.Background()
 		b.ReportAllocs()
+		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
-			Func("sync-inventory", func(ctx context.Context) error {
+			_ = Run(bgCtx, "sync-inventory", func(ctx context.Context) error {
 				WithGroupAttrs(ctx, "inventoryService.sync",
 					slog.Int("syncedSkus", 42),
 					slog.Int64("durationMs", 12),

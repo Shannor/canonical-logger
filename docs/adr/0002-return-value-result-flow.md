@@ -46,23 +46,23 @@ Because `FieldBag` accumulates a single wide event across an entire **Unit of Wo
 
 | API | Use for |
 | --- | --- |
-| `clog.Run(ctx, event, func(ctx) error) error` | Any boundary: framework handlers (Gin, Echo), webhooks, consumers. Returns the error to the caller. |
+| `clog.Run(ctx, event, func(ctx) error) error` | Any boundary: framework handlers (Gin, Echo), webhooks, consumers, synchronous tasks (startup, migrations). Opens a `FieldBag` and flushes on return if `ctx` has no bag yet. Returns the error to the caller. |
 | `clog.RunValue[T](ctx, event, func(ctx) (T, error)) (T, error)` | RPC / gRPC handlers: `return clog.RunValue(ctx, "get-user", ...)`. |
 | `clog.HTTPHandler(event, clog.HTTPHandlerFunc) http.Handler` | `net/http` / ServeMux / Chi (appHandler pattern). The handler still writes its own response. |
 | `clog.Go(ctx, name, func(ctx) error)` | Detached goroutine. `name` is the event name. |
-| `clog.Func(name, func(ctx) error) error` | Synchronous task (startup, migrations). Returns the error. |
-| `clog.CronFunc(name, func(ctx) error) func()` | Cron job body. |
+| `clog.RunFunc(name, func(ctx) error) func()` | Zero-arg `func()` wrapper for cron schedulers and callbacks. |
 
-### 2. `SetResult` and `DeferResult` are removed
+### 2. `SetResult`, `DeferResult`, and `Func` are removed; `CronFunc` is renamed to `RunFunc`
 
 The logic lives on as the unexported `recordResult`. There is no public way to set an outcome other than returning an error from a wrapper. (`WithMessage` still exists for custom messages but carries no outcome semantics.)
 
-`Go` / `Func` / `CronFunc` change signature from `func(ctx)` to `func(ctx) error` rather than gaining `...E` variants. A single way to do it is simpler to teach and lint, and pre-v1 is the right time to break.
+`Run` replaces `Func` by opening a `FieldBag` and flushing the canonical log line when no outer middleware has opened a bag on `ctx`. `CronFunc` is renamed to `RunFunc` (mirroring Go's `sync.OnceFunc`) to reflect that it adapts `Run` into a zero-argument `func()`. `Go` and `RunFunc` take `func(ctx) error` rather than gaining `...E` variants. A single way to do it is simpler to teach and lint, and pre-v1 is the right time to break.
 
 ### 3. Semantics
 
 - `nil` → `<event>-success`. Error → `<event>-failure`, `"error"` group populated via `ErrorFormatter`, `ERROR` level.
-- **Panics** inside `Run` are recorded as `<event>-failure` and **re-panicked**. `Go` still recovers them. `Func` / `CronFunc` flush the canonical line and let the panic propagate.
+- **Standalone vs. middleware-wrapped**: if `ctx` already carries a `FieldBag` (from `HTTPMiddleware`, a router middleware, `Go`, or an outer `Run`), `Run` records the outcome on that bag and lets the outermost owner flush. If `ctx` has no `FieldBag`, `Run` opens one and flushes the canonical log line when `fn` returns.
+- **Panics** inside `Run` are recorded as `<event>-failure` (and flushed if `Run` opened the bag) and **re-panicked**. `Go` still recovers them. `RunFunc` / standalone `Run` flush the canonical line and let the panic propagate.
 - **Sticky failure**: the bag tracks an outcome state. Once a failure is recorded (e.g. by a nested `Run`) or the bag carries an `"error"` group (e.g. attached by a router adapter), a subsequent `nil` return never downgrades the unit of work to `-success`.
 - **Nesting**: the outermost wrapper owns the event name (it records last).
 - Background tasks now always emit `<name>-success` / `<name>-failure` instead of the generic `canonical-log-line`.
@@ -78,10 +78,10 @@ Emitters (core or userland) only *read* the bag (`Message`, `HasGroup`, `HasWarn
 
 ### 5. Core scope rule: record in core, emit in recipes
 
-Core may contain **standard-library-only helpers that record outcomes** (`Run`, `RunValue`, `HTTPHandler`, `Go`, `Func`, `CronFunc`). Helpers that **emit** canonical lines or **reconcile/rewrite** outcomes from transport state belong in userland recipes (`docs/adapters.md`), alongside the Gin / Echo / gRPC recipes.
+Core may contain **standard-library-only helpers that record outcomes** (`Run`, `RunValue`, `RunFunc`, `HTTPHandler`, `Go`). Helpers that **emit** transport-specific canonical lines or **reconcile/rewrite** outcomes from transport state belong in userland recipes (`docs/adapters.md`), alongside the Gin / Echo / gRPC recipes.
 
 Applying the rule:
-- `clog.HTTPHandler` / `clog.HTTPHandlerFunc` **stay in core**. They are ~6 lines over `net/http`, never emit, and make the shadow-proof pattern the shortest one for every `http.Handler`-compatible router (ServeMux, Chi, gorilla). They are a no-op when no bag is on the request context, so they don't depend on `HTTPMiddleware`.
+- `clog.HTTPHandler` / `clog.HTTPHandlerFunc` **stay in core**. They are ~6 lines over `net/http`, delegate to `Run`, and make the shadow-proof pattern the shortest one for every `http.Handler`-compatible router (ServeMux, Chi, gorilla). When no `FieldBag` is on the request context, `Run` opens one and flushes on exit, so `HTTPHandler` works with or without `HTTPMiddleware`.
 - They use the `HTTP` prefix (not `Handler` / `HandlerFunc`) because in this package "Handler" already means `slog.Handler` (`SamplingHandler`, `ConsoleHandler`, `NewJSONHandler`). The prefix also matches `HTTPMiddleware` / `HTTPTraceMiddleware`.
 - `HTTPHandler` deliberately does **not** render error responses. Response rendering is application policy.
 - Framework equivalents (e.g. a `gin.HandlerFunc` adapter) are not added to core. They live in recipes per ADR-0001.
@@ -97,7 +97,8 @@ Applying the rule:
 | `func (...) (_ *T, err error) { defer clog.DeferResult(ctx, "e", &err) ... }` | `return clog.RunValue(ctx, "e", func(ctx context.Context) (*T, error) { ... })` |
 | `clog.SetResult(ctx, "e", err)` | Return `err` from the enclosing wrapper. |
 | `clog.Go(ctx, "n", func(ctx) { var err error; defer clog.DeferResult(ctx, "n", &err); err = do(ctx) })` | `clog.Go(ctx, "n", do)` |
-| `clog.Func("n", func(ctx) {...})` / `clog.CronFunc("n", func(ctx) {...})` | Same names, `fn` now returns `error`. |
+| `clog.Func("n", func(ctx) {...})` | `clog.Run(ctx, "n", func(ctx) error {...})` |
+| `clog.CronFunc("n", func(ctx) {...})` | `clog.RunFunc("n", func(ctx) error {...})` |
 
 ---
 

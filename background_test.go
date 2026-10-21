@@ -112,11 +112,11 @@ func TestNewBackground_FlushOnceOnly(t *testing.T) {
 	assert.Len(t, lines, 1, "flush must emit exactly one canonical line regardless of how many times it is called")
 }
 
-// --- Func ---
+// --- Run (standalone synchronous task) ---
 
-func TestFunc_EmitsCanonicalLine(t *testing.T) {
+func TestRun_StandaloneEmitsCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		Func("startup-task", func(ctx context.Context) error { return nil })
+		_ = Run(context.Background(), "startup-task", func(ctx context.Context) error { return nil })
 	})
 
 	require.Len(t, lines, 1)
@@ -125,20 +125,20 @@ func TestFunc_EmitsCanonicalLine(t *testing.T) {
 	assert.NotEmpty(t, lines[0]["latency"])
 }
 
-func TestFunc_ContextHasBag(t *testing.T) {
+func TestRun_StandaloneContextHasBag(t *testing.T) {
 	var captured *FieldBag
 	captureBackground(t, func() {
-		Func("bag-func", func(ctx context.Context) error {
+		_ = Run(context.Background(), "bag-func", func(ctx context.Context) error {
 			captured = BagFromContext(ctx)
 			return nil
 		})
 	})
-	require.NotNil(t, captured, "ctx passed to Func fn must have a FieldBag")
+	require.NotNil(t, captured, "ctx passed to Run fn must have a FieldBag")
 }
 
-func TestFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
+func TestRun_StandaloneFieldsAppearedInCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		Func("fields-func", func(ctx context.Context) error {
+		_ = Run(context.Background(), "fields-func", func(ctx context.Context) error {
 			WithField(ctx, "records_synced", 7)
 			return nil
 		})
@@ -148,25 +148,25 @@ func TestFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
 	assert.Equal(t, float64(7), lines[0]["records_synced"])
 }
 
-func TestFunc_RunsSynchronously(t *testing.T) {
+func TestRun_StandaloneRunsSynchronously(t *testing.T) {
 	ran := false
-	Func("sync-func", func(ctx context.Context) error {
+	_ = Run(context.Background(), "sync-func", func(ctx context.Context) error {
 		ran = true
 		return nil
 	})
-	assert.True(t, ran, "Func must run fn before returning")
+	assert.True(t, ran, "Run must run fn before returning")
 }
 
-// --- CronFunc ---
+// --- RunFunc ---
 
-func TestCronFunc_ReturnsCallable(t *testing.T) {
-	fn := CronFunc("cron-job", func(ctx context.Context) error { return nil })
+func TestRunFunc_ReturnsCallable(t *testing.T) {
+	fn := RunFunc("cron-job", func(ctx context.Context) error { return nil })
 	require.NotNil(t, fn)
 }
 
-func TestCronFunc_EmitsCanonicalLine(t *testing.T) {
+func TestRunFunc_EmitsCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		CronFunc("my-cron", func(ctx context.Context) error { return nil })()
+		RunFunc("my-cron", func(ctx context.Context) error { return nil })()
 	})
 
 	require.Len(t, lines, 1)
@@ -174,20 +174,20 @@ func TestCronFunc_EmitsCanonicalLine(t *testing.T) {
 	assert.Equal(t, "my-cron-success", lines[0]["message"], "outcome is recorded from fn's return value")
 }
 
-func TestCronFunc_ContextHasBag(t *testing.T) {
+func TestRunFunc_ContextHasBag(t *testing.T) {
 	var captured *FieldBag
 	captureBackground(t, func() {
-		CronFunc("bag-cron", func(ctx context.Context) error {
+		RunFunc("bag-cron", func(ctx context.Context) error {
 			captured = BagFromContext(ctx)
 			return nil
 		})()
 	})
-	require.NotNil(t, captured, "ctx passed to CronFunc fn must have a FieldBag")
+	require.NotNil(t, captured, "ctx passed to RunFunc fn must have a FieldBag")
 }
 
-func TestCronFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
+func TestRunFunc_FieldsAppearedInCanonicalLine(t *testing.T) {
 	lines := captureBackground(t, func() {
-		CronFunc("fields-cron", func(ctx context.Context) error {
+		RunFunc("fields-cron", func(ctx context.Context) error {
 			WithField(ctx, "users_processed", 10)
 			return nil
 		})()
@@ -462,11 +462,11 @@ func TestGo_PreservesParentContextValuesWithoutCancel(t *testing.T) {
 	assert.NoError(t, gotErr)
 }
 
-func TestFunc_LoggerUpdatedInsideFn(t *testing.T) {
+func TestRun_LoggerUpdatedInsideFn(t *testing.T) {
 	w := &syncWriter{}
 	customLogger := slog.New(NewJSONHandler(w, &slog.HandlerOptions{Level: slog.LevelDebug}))
 
-	Func("custom-logger-func", func(ctx context.Context) error {
+	_ = Run(context.Background(), "custom-logger-func", func(ctx context.Context) error {
 		NewContextWithLogger(ctx, customLogger)
 		WithField(ctx, "migrated", true)
 		return nil

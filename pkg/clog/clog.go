@@ -77,8 +77,7 @@ var (
 
 	// Background and asynchronous tasks
 	NewBackground = root.NewBackground
-	Func          = root.Func
-	CronFunc      = root.CronFunc
+	RunFunc       = root.RunFunc
 	Go            = root.Go
 
 	// Middlewares & Trace Extraction
