@@ -39,12 +39,8 @@ For AI agents and automated coding workflows, see [AGENTS.md](AGENTS.md) for str
 go get github.com/Shannor/canonical-logger
 ```
 
-Import either the root package or `pkg/clog`:
-
 ```go
 import "github.com/Shannor/canonical-logger"
-// or
-import "github.com/Shannor/canonical-logger/pkg/clog"
 ```
 
 ---

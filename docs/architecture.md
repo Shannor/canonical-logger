@@ -64,8 +64,7 @@ github.com/Shannor/canonical-logger (Pure Go Standard Library)
 ├── result.go               # Run, RunValue, HTTPHandler (return-value results & standalone flush), ErrorFormatter
 ├── background.go           # Detached goroutines (Go) and zero-arg closures (RunFunc)
 ├── middleware.go           # Standard net/http HTTPMiddleware
-├── trace.go                # HTTPTraceMiddleware & exported ExtractTrace port
-└── pkg/clog/               # Drop-in alias package re-exporting root symbols
+└── trace.go                # HTTPTraceMiddleware & exported ExtractTrace port
 ```
 
 ---

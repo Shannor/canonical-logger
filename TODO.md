@@ -19,9 +19,8 @@ Currently, the root package `github.com/Shannor/canonical-logger` directly impor
     func RegisterContextResolver(resolver ContextResolver)
     ```
   - Allows Gin and OpenAPI (`oapi-codegen`) users to register context extraction in userland without coupling the core package—or each other—to third-party dependencies.
-- [x] **Deprecation & Phasing Out of `pkg/xlog`**:
-  - `pkg/xlog` is a legacy compatibility shim for the original EventX `xlog` package.
-  - Removed in favor of `github.com/Shannor/canonical-logger` and `pkg/clog`.
+- [x] **Deprecation & Phasing Out of `pkg/xlog` and `pkg/clog`**:
+  - Removed the legacy `pkg/xlog` and `pkg/clog` forwarding shims in favor of importing the root module `github.com/Shannor/canonical-logger` directly.
   - Ensure zero references to `xlog` remain in the core codebase.
 - [x] **Return-Value Result Flow** ([ADR-0002](docs/adr/0002-return-value-result-flow.md)):
   - Removed `SetResult`, `DeferResult`, and `Func`, and renamed `CronFunc` to `RunFunc`. Outcomes come only from return values via `Run` (which also opens and flushes a `FieldBag` when no outer middleware is active), `RunValue`, `RunFunc`, `HTTPHandler`, and `Go` (`func(ctx) error`).
